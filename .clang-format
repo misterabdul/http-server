@@ -1,0 +1,18 @@
+BasedOnStyle: Google
+
+Language: Cpp
+AlignAfterOpenBracket: BlockIndent
+AlignConsecutiveMacros: true
+AlignOperands: AlignAfterOperator
+AllowShortBlocksOnASingleLine: true
+AllowShortFunctionsOnASingleLine: false
+BinPackParameters: false
+BracketAlignmentStyle: BlockIndent
+BreakBeforeBraces: Attach
+ColumnLimit: 120
+DerivePointerAlignment: false
+IndentAccessModifiers: false
+IndentWidth: 4
+InsertNewlineAtEOF: true
+PointerAlignment: Right
+UseTab: Never
