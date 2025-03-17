@@ -4,7 +4,7 @@ Language: Cpp
 AlignAfterOpenBracket: BlockIndent
 AlignConsecutiveMacros: true
 AlignOperands: AlignAfterOperator
-AllowShortBlocksOnASingleLine: true
+AllowShortBlocksOnASingleLine: false
 AllowShortFunctionsOnASingleLine: false
 BinPackParameters: false
 BracketAlignmentStyle: BlockIndent
