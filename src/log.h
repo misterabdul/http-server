@@ -3,8 +3,26 @@
 
 #include <stdio.h>
 
+/**
+ * @brief Print a pretty log message for debugging.
+ *
+ * @param[in] source The source code file path.
+ * @param[in] line   The line number in the source code file.
+ * @param[in] func   The function that execute the code.
+ * @param[in] format The format specifier as in printf.
+ * @param[in] ...    Any extra data for the format as in printf.
+ */
 void log_debug(const char *source, int line, const char *func, const char *format, ...);
 
+/**
+ * @brief Print a pretty log message for error.
+ *
+ * @param[in] source The source code file path.
+ * @param[in] line   The line number in the source code file.
+ * @param[in] func   The function that execute the code.
+ * @param[in] format The format specifier as in printf.
+ * @param[in] ...    Any extra data for the format as in printf.
+ */
 void log_error(const char *source, int line, const char *func, const char *format, ...);
 
 #ifdef VERBOSE

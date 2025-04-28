@@ -3,8 +3,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+/**
+ * Print a pretty debug log message to standard output.
+ */
 void log_debug(const char *source, int line, const char *func, const char *format, ...) {
-    fprintf(stdout, "%s,%d (%s): ", source, line, func);
+    fprintf(stdout, "%s:%d '%s': ", source, line, func);
 
     va_list args;
     va_start(args, format);
@@ -12,8 +15,11 @@ void log_debug(const char *source, int line, const char *func, const char *forma
     va_end(args);
 }
 
+/**
+ * Print a pretty error log message to standard output.
+ */
 void log_error(const char *source, int line, const char *func, const char *format, ...) {
-    fprintf(stderr, "%s,%d (%s): ", source, line, func);
+    fprintf(stderr, "%s:%d '%s': ", source, line, func);
 
     va_list args;
     va_start(args, format);
