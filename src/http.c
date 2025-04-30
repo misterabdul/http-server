@@ -3,10 +3,14 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "config.h"
 #include "log.h"
+
+#define MIME_BUFFER_SIZE 100
+#define TIME_BUFFER_SIZE 30
 
 /**
  * @brief Simple HTML string for HTTP not found response.
@@ -134,19 +138,19 @@ char *mimes[][2] = {
  * @param[in]  file_path   The file path.
  */
 void http_get_mime(char *buffer, size_t buffer_size, const char *file_path) {
-    char *extension = NULL;
-    for (char *c = (char *)file_path; *c != '\0'; c++) {
-        if (*c == '.') {
-            extension = c;
+    char *_extension = NULL;
+    for (char *_c = (char *)file_path; *_c != '\0'; _c++) {
+        if (*_c == '.') {
+            _extension = _c;
         }
     }
 
-    if (extension) {
-        for (int i = 0; i < mimes_len; i++) {
-            if (strcmp(extension, mimes[i][0]) != 0) {
+    if (_extension) {
+        for (int _i = 0; _i < mimes_len; _i++) {
+            if (strcmp(_extension, mimes[_i][0]) != 0) {
                 continue;
             }
-            strncpy(buffer, mimes[i][1], buffer_size);
+            strncpy(buffer, mimes[_i][1], buffer_size);
             return;
         }
     }
@@ -155,96 +159,112 @@ void http_get_mime(char *buffer, size_t buffer_size, const char *file_path) {
 }
 
 /**
+ * @brief Get the current time string.
+ *
+ * @param[out] buffer      The string buffer for the time.
+ * @param[in]  buffer_size The string buffer size.
+ *
+ * @return The number of character written, or 0 if it would exceed buffer size.
+ */
+size_t http_get_time(char *buffer, size_t buffer_size) {
+    time_t _now = time(0);
+    struct tm _tm = *gmtime(&_now);
+
+    return strftime(buffer, buffer_size, "%a, %d %b %Y %H:%M:%S %Z", &_tm);
+}
+
+/**
  * Parse the raw request string manually character by character.
  */
 int http_parse_request(http_message_t *message, const char *request, size_t request_len) {
-    size_t i = 0, j, headers_size = message->headers_len;
+    size_t _i = 0, _j;
 
     /* parse method */
-    for (j = i; i < request_len; i++) {
-        if (request[i] == ' ' || request[i] == '\r' || request[i] == '\n' || request[i] == '\0') {
+    for (_j = _i; _i < request_len; _i++) {
+        if (request[_i] == ' ' || request[_i] == '\r' || request[_i] == '\n' || request[_i] == '\0') {
             break;
         }
     }
-    if (request[i] != ' ') {
+    if (request[_i] != ' ') {
         return 1;
     }
-    message->method = (char *)&request[j];
-    message->method_len = i - j;
+    message->method = (char *)&request[_j];
+    message->method_len = _i - _j;
 
     /* parse target */
-    for (j = ++i; i < request_len; i++) {
-        if (request[i] == ' ' || request[i] == '\r' || request[i] == '\n' || request[i] == '\0') {
+    for (_j = ++_i; _i < request_len; _i++) {
+        if (request[_i] == ' ' || request[_i] == '\r' || request[_i] == '\n' || request[_i] == '\0') {
             break;
         }
     }
-    if (request[i] != ' ') {
+    if (request[_i] != ' ') {
         return 1;
     }
-    message->target = (char *)&request[j];
-    message->target_len = i - j;
+    message->target = (char *)&request[_j];
+    message->target_len = _i - _j;
 
     /* parse version */
-    for (j = ++i; i < request_len; i++) {
-        if (request[i] == ' ' || request[i] == '\r' || request[i] == '\n' || request[i] == '\0') {
+    for (_j = ++_i; _i < request_len; _i++) {
+        if (request[_i] == ' ' || request[_i] == '\r' || request[_i] == '\n' || request[_i] == '\0') {
             break;
         }
     }
-    message->version = (char *)&request[j];
-    message->version_len = i - j;
+    message->version = (char *)&request[_j];
+    message->version_len = _i - _j;
 
     /* parse headers */
+    size_t _headers_size = message->headers_len;
     message->headers_len = 0;
-    for (; message->headers_len < headers_size && i < request_len;) {
-        if (request[i] == '\0') {
+    for (; message->headers_len < _headers_size && _i < request_len;) {
+        if (request[_i] == '\0') {
             break;
         }
 
-        for (; i < request_len; i++) {
-            if (request[i] == '\n' || request[i] == '\0') {
+        for (; _i < request_len; _i++) {
+            if (request[_i] == '\n' || request[_i] == '\0') {
                 break;
             }
         }
-        if (request[i] == '\0') {
+        if (request[_i] == '\0') {
             break;
         }
 
-        for (j = ++i; i < request_len; i++) {
-            if (request[i] == ':' || request[i] == '\n' || request[i] == '\0') {
+        for (_j = ++_i; _i < request_len; _i++) {
+            if (request[_i] == ':' || request[_i] == '\n' || request[_i] == '\0') {
                 break;
             }
         }
-        if (request[i] != ':') {
+        if (request[_i] != ':') {
             break;
         }
 
-        message->headers[message->headers_len].name = (char *)&request[j];
-        message->headers[message->headers_len].name_len = i - j;
+        message->headers[message->headers_len].name = (char *)&request[_j];
+        message->headers[message->headers_len].name_len = _i - _j;
 
-        for (++i; i < request_len; i++) {
-            if (request[i] != ' ' || request[i] == '\0') {
+        for (++_i; _i < request_len; _i++) {
+            if (request[_i] != ' ' || request[_i] == '\0') {
                 break;
             }
         }
-        if (request[i] == '\0') {
+        if (request[_i] == '\0') {
             break;
         }
 
-        for (j = i; i < request_len; i++) {
-            if (request[i] == '\r' || request[i] == '\n' || request[i] == '\0') {
+        for (_j = _i; _i < request_len; _i++) {
+            if (request[_i] == '\r' || request[_i] == '\n' || request[_i] == '\0') {
                 break;
             }
         }
-        message->headers[message->headers_len].value = (char *)&request[j];
-        message->headers[message->headers_len].value_len = i - j;
+        message->headers[message->headers_len].value = (char *)&request[_j];
+        message->headers[message->headers_len].value_len = _i - _j;
 
         message->headers_len++;
     }
 
     /* parse body */
-    if (++i < request_len) {
-        message->body = (char *)&request[i];
-        message->body_len = request_len - i;
+    if (++_i < request_len) {
+        message->body = (char *)&request[_i];
+        message->body_len = request_len - _i;
     } else {
         message->body = NULL;
         message->body_len = 0;
@@ -256,14 +276,14 @@ int http_parse_request(http_message_t *message, const char *request, size_t requ
 /**
  * Try to resolve the actual file path from the HTTP message's target.
  */
-int http_resolve_file_path(http_message_t *message, char *file_path, size_t file_path_size) {
+int http_resolve_file_path(http_message_t *message, char *root_path, char *file_path, size_t file_path_size) {
     if (message->target_len > 1) {
-        for (size_t i = 1; i < message->target_len; i++) {
-            if (message->target[i] == '?') {
-                message->target_len = i;
+        for (size_t _i = 1; _i < message->target_len; _i++) {
+            if (message->target[_i] == '?') {
+                message->target_len = _i;
                 break;
             }
-            if (message->target[i - 1] == '.' && message->target[i] == '.') {
+            if (message->target[_i - 1] == '.' && message->target[_i] == '.') {
                 return -1;
             }
         }
@@ -271,12 +291,12 @@ int http_resolve_file_path(http_message_t *message, char *file_path, size_t file
 
     if (message->target_len <= 0 || message->target[message->target_len - 1] == '/') {
         if (snprintf(
-                file_path, file_path_size, "./%s%.*sindex.html", ROOT_PATH, (int)message->target_len, message->target
+                file_path, file_path_size, "./%s%.*sindex.html", root_path, (int)message->target_len, message->target
             ) < 0) {
             return -1;
         }
     } else {
-        if (snprintf(file_path, file_path_size, "./%s%.*s", ROOT_PATH, (int)message->target_len, message->target) < 0) {
+        if (snprintf(file_path, file_path_size, "./%s%.*s", root_path, (int)message->target_len, message->target) < 0) {
             return -1;
         }
     }
@@ -285,13 +305,13 @@ int http_resolve_file_path(http_message_t *message, char *file_path, size_t file
         return -1;
     }
 
-    struct stat path_stat;
-    if (stat(file_path, &path_stat) != 0) {
+    struct stat _path_stat;
+    if (stat(file_path, &_path_stat) != 0) {
         return -1;
     };
-    if (S_ISREG(path_stat.st_mode) == 0 &&
+    if (S_ISREG(_path_stat.st_mode) == 0 &&
         snprintf(
-            file_path, file_path_size, "./%s%.*s/index.html", ROOT_PATH, (int)message->target_len, message->target
+            file_path, file_path_size, "./%s%.*s/index.html", root_path, (int)message->target_len, message->target
         ) < 0) {
         return -1;
     }
@@ -303,16 +323,19 @@ int http_resolve_file_path(http_message_t *message, char *file_path, size_t file
  * Build HTTP header string into the buffer for the given file path and file size.
  */
 int http_header_file(char *buffer, size_t buffer_size, char *file_path, off_t file_size) {
-    char mime[100];
-    http_get_mime(mime, 100, file_path);
+    char _mime[MIME_BUFFER_SIZE], _time_string[TIME_BUFFER_SIZE];
+    http_get_mime(_mime, MIME_BUFFER_SIZE, file_path);
+    http_get_time(_time_string, TIME_BUFFER_SIZE);
 
     return snprintf(
         buffer, buffer_size,
         "HTTP/1.1 200 OK\r\n"
-        "Server: misterabdul-http-server\r\n"
+        "Connection: keep-alive\r\n"
+        "Content-Length: %lu\r\n"
         "Content-Type: %s\r\n"
-        "Content-Length: %lu\r\n\r\n",
-        mime, file_size
+        "Date: %s\r\n"
+        "Server: misterabdul-http-server\r\n\r\n",
+        file_size, _mime, _time_string
     );
 }
 
@@ -320,14 +343,19 @@ int http_header_file(char *buffer, size_t buffer_size, char *file_path, off_t fi
  * Build entire HTTP message string into the buffer for the HTTP not found response.
  */
 int http_message_not_found(char *buffer, size_t buffer_size) {
+    char _time_string[TIME_BUFFER_SIZE];
+    http_get_time(_time_string, TIME_BUFFER_SIZE);
+
     return snprintf(
         buffer, buffer_size,
         "HTTP/1.1 404 NOT FOUND\r\n"
-        "Server: misterabdul-http-server\r\n"
+        "Connection: keep-alive\r\n"
+        "Content-Length: %lu\r\n"
         "Content-Type: text/html\r\n"
-        "Content-Length: %lu\r\n\r\n"
+        "Date: %s\r\n"
+        "Server: misterabdul-http-server\r\n\r\n"
         "%s",
-        strlen(html_not_found), html_not_found
+        strlen(html_not_found), _time_string, html_not_found
     );
 }
 
@@ -335,14 +363,19 @@ int http_message_not_found(char *buffer, size_t buffer_size) {
  * Build entire HTTP message string into the buffer for the HTTP method not allowed response.
  */
 int http_message_not_allowed(char *buffer, size_t buffer_size) {
+    char _time_string[TIME_BUFFER_SIZE];
+    http_get_time(_time_string, TIME_BUFFER_SIZE);
+
     return snprintf(
         buffer, buffer_size,
         "HTTP/1.1 405 METHOD NOT ALLOWED\r\n"
-        "Server: misterabdul-http-server\r\n"
+        "Connection: keep-alive\r\n"
+        "Content-Length: %lu\r\n"
         "Content-Type: text/html\r\n"
-        "Content-Length: %lu\r\n\r\n"
+        "Date: %s\r\n"
+        "Server: misterabdul-http-server\r\n\r\n"
         "%s",
-        strlen(html_method_not_allowed), html_method_not_allowed
+        strlen(html_method_not_allowed), _time_string, html_method_not_allowed
     );
 }
 
@@ -350,13 +383,18 @@ int http_message_not_allowed(char *buffer, size_t buffer_size) {
  * Build entire HTTP message string into the buffer for the HTTP internal server error response.
  */
 int http_message_error(char *buffer, size_t buffer_size) {
+    char _time_string[TIME_BUFFER_SIZE];
+    http_get_time(_time_string, TIME_BUFFER_SIZE);
+
     return snprintf(
         buffer, buffer_size,
         "HTTP/1.1 500 INTERNAL SERVER ERROR\r\n"
-        "Server: misterabdul-http-server\r\n"
+        "Connection: keep-alive\r\n"
+        "Content-Length: %lu\r\n"
         "Content-Type: text/html\r\n"
-        "Content-Length: %lu\r\n\r\n"
+        "Date: %s\r\n"
+        "Server: misterabdul-http-server\r\n\r\n"
         "%s",
-        strlen(html_internal_server_error), html_internal_server_error
+        strlen(html_internal_server_error), _time_string, html_internal_server_error
     );
 }

@@ -18,7 +18,7 @@ typedef struct http_header {
  */
 typedef struct http_message {
     char *method, *target, *version, *body;
-    http_header_t headers[MAX_HEADERS];
+    http_header_t headers[HEADER_BUFFER_SIZE];
     size_t method_len, target_len, version_len, body_len, headers_len;
 } http_message_t;
 
@@ -37,12 +37,13 @@ int http_parse_request(http_message_t *message, const char *request, size_t requ
  * @brief Resolve file path from HTTP message.
  *
  * @param[in]  message        The message instance.
+ * @param[in]  root_path      The root path.
  * @param[out] file_path      The file path string buffer.
  * @param[in]  file_path_size The file path string buffer size.
  *
  * @return Result code, 0 for success or -1 for errors.
  */
-int http_resolve_file_path(http_message_t *message, char *file_path, size_t file_path_size);
+int http_resolve_file_path(http_message_t *message, char *root_path, char *file_path, size_t file_path_size);
 
 /**
  * @brief Build HTTP message header string for file response.

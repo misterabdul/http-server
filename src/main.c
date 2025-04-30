@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -11,44 +12,196 @@
 #include "http.h"
 #include "log.h"
 #include "tcp.h"
-#include "worker.h"
+#include "thread.h"
 
 /**
- * @brief Listener worker context data.
+ * @brief Shared mutex for each listener.
  */
-typedef struct listen_context {
+typedef struct listener_mutex {
+    pthread_mutex_t lock;
+    int cycle, worker_count;
+} listener_mutex_t;
+
+/**
+ * @brief Listener context data.
+ */
+typedef struct listener_context {
+    struct epoll_event *watchlist_buffer;
+    server_config_t *config;
+    listener_mutex_t *mutex;
     tcp_server_t *server;
-    int cycle;
-} listen_context_t;
+} listener_context_t;
 
 /**
- * @brief Process worker context data.
+ * @brief Worker context data.
  */
-typedef struct process_context {
-    http_message_t message;
-    char buffer[WORKER_BUFFER_SIZE];
-    size_t buffer_size, bytes_to_send;
-    ssize_t received_size;
-
-    char file_path[PATH_BUFFER_SIZE];
-    off_t file_size;
-    int file_fd;
-} process_context_t;
+typedef struct worker_context {
+    struct epoll_event *watchlist_buffer;
+    size_t buffer_size, file_path_size;
+    char *buffer, *file_path;
+    http_message_t *message;
+} worker_context_t;
 
 /**
- * @brief Listener worker global instance.
+ * @brief Connection context data.
  */
-worker_t listen_worker = {0};
+typedef struct connection_context {
+    tcp_server_t *server;
+    server_config_t *config;
+} connection_context_t;
 
 /**
- * @brief Process workers global instance.
+ * @brief Global main configuration.
  */
-worker_t process_workers[WORKER_COUNT] = {0};
+config_t main_config;
 
 /**
- * @brief Global epoll buffer for the process workers.
+ * @brief Global mutex for each listener workers.
  */
-struct epoll_event process_watchlist_buffers[WORKER_COUNT][MAX_CONNECTION] = {0};
+listener_mutex_t listener_mutex;
+
+/**
+ * @brief Global listener thread instances.
+ */
+thread_t *listeners;
+
+/**
+ * @brief Global worker thread instances.
+ */
+thread_t *workers;
+
+/**
+ * @brief Allocate memory and initialize listener context data.
+ *
+ * @param[in] server_config Server configuration.
+ *
+ * @return Listener context data.
+ *
+ * @note Contains pointer arithmetic, allocate one big block of memory for everything.
+ */
+listener_context_t *listener_context_create(server_config_t *server_config) {
+    listener_context_t *_context;
+    tcp_server_t *_server;
+
+    if (server_config->family == AF_INET) {
+        /* IPv4 configuration*/
+
+        _context = malloc(
+            sizeof(listener_context_t) + sizeof(struct sockaddr_in) + sizeof(tcp_server_t) +
+            (2 * sizeof(struct epoll_event))
+        );
+
+        struct sockaddr_in *_address = (struct sockaddr_in *)((char *)_context + sizeof(listener_context_t));
+        _server = (tcp_server_t *)((char *)_address + sizeof(struct sockaddr_in));
+
+        *_address = (struct sockaddr_in){.sin_family = AF_INET, .sin_port = htons(server_config->port)};
+        inet_ntop(AF_INET, &(_address->sin_addr), server_config->address, INET_ADDRSTRLEN);
+
+        *_server = (tcp_server_t){
+            .max_connection = main_config.max_connection,
+            .address_length = sizeof(struct sockaddr_in),
+            .address = (struct sockaddr *)_address,
+        };
+    } else {
+        /* IPv6 configuration*/
+
+        _context = malloc(
+            sizeof(listener_context_t) + sizeof(struct sockaddr_in6) + sizeof(tcp_server_t) +
+            (2 * sizeof(struct epoll_event))
+        );
+
+        struct sockaddr_in6 *_address6 = (struct sockaddr_in6 *)((char *)_context + sizeof(listener_context_t));
+        _server = (tcp_server_t *)((char *)_address6 + sizeof(struct sockaddr_in6));
+
+        *_address6 = (struct sockaddr_in6){.sin6_family = AF_INET6, .sin6_port = htons(server_config->port)};
+        inet_ntop(AF_INET, &(_address6->sin6_addr), server_config->address, INET_ADDRSTRLEN);
+
+        *_server = (tcp_server_t){
+            .max_connection = main_config.max_connection,
+            .address_length = sizeof(struct sockaddr_in6),
+            .address = (struct sockaddr *)_address6,
+        };
+    }
+
+    *_context = (listener_context_t){
+        .watchlist_buffer = (struct epoll_event *)((char *)_server + sizeof(tcp_server_t)),
+        .mutex = &listener_mutex,
+        .config = server_config,
+        .server = _server,
+    };
+
+    return _context;
+}
+
+/**
+ * @brief Allocate memory and initialize worker context data.
+ *
+ * @return Worker context data.
+ *
+ * @note Contains pointer arithmetic, allocate one big block of memory for everything.
+ */
+worker_context_t *worker_context_create(void) {
+    worker_context_t *_context = malloc(
+        sizeof(worker_context_t) + WORKER_BUFFER_SIZE + PATH_BUFFER_SIZE + sizeof(http_message_t) +
+        (main_config.max_connection * sizeof(struct epoll_event))
+    );
+    char *_buffer = (char *)_context + sizeof(worker_context_t), *_path_buffer = _buffer + WORKER_BUFFER_SIZE;
+    http_message_t *_message = (http_message_t *)(_path_buffer + PATH_BUFFER_SIZE);
+
+    *_context = (worker_context_t){
+        .watchlist_buffer = (struct epoll_event *)((char *)_message + sizeof(http_message_t)),
+        .file_path_size = PATH_BUFFER_SIZE,
+        .buffer_size = WORKER_BUFFER_SIZE,
+        .file_path = _path_buffer,
+        .message = _message,
+        .buffer = _buffer,
+    };
+
+    return _context;
+}
+
+/**
+ * @brief Create a new connection instance.
+ *
+ * @param[in] server The TCP server.
+ * @param[in] config The server config.
+ *
+ * @return A new connection instance.
+ *
+ * @note Contains pointer arithmetic, allocate one big block of memory for everything.
+ */
+tcp_connection_t *connection_create(tcp_server_t *server, server_config_t *config) {
+    connection_context_t *_context;
+    tcp_connection_t *_connection;
+
+    if (server->address->sa_family == AF_INET) {
+        /* IPv4 connection */
+        _connection = malloc(sizeof(tcp_connection_t) + sizeof(struct sockaddr_in) + sizeof(connection_context_t));
+        struct sockaddr_in *_address = (struct sockaddr_in *)((char *)_connection + sizeof(tcp_connection_t));
+        _context = (connection_context_t *)((char *)_address + sizeof(struct sockaddr_in));
+
+        *_context = (connection_context_t){.server = server, .config = config};
+        *_connection = (tcp_connection_t){
+            .address_length = sizeof(struct sockaddr_in),
+            .address = (struct sockaddr *)_address,
+            .context = _context,
+        };
+    } else {
+        /* IPv6 connection */
+        _connection = malloc(sizeof(tcp_connection_t) + sizeof(struct sockaddr_in6) + sizeof(connection_context_t));
+        struct sockaddr_in6 *_address6 = (struct sockaddr_in6 *)((char *)_connection + sizeof(tcp_connection_t));
+        _context = (connection_context_t *)((char *)_address6 + sizeof(struct sockaddr_in6));
+
+        *_context = (connection_context_t){.server = server, .config = config};
+        *_connection = (tcp_connection_t){
+            .address_length = sizeof(struct sockaddr_in6),
+            .address = (struct sockaddr *)_address6,
+            .context = _context,
+        };
+    }
+
+    return _connection;
+}
 
 /**
  * @brief Get the actual file size.
@@ -57,196 +210,296 @@ struct epoll_event process_watchlist_buffers[WORKER_COUNT][MAX_CONNECTION] = {0}
  *
  * @return The size of the file.
  */
-off_t get_file_size(int file_fd) {
-    struct stat st;
-    if (fstat(file_fd, &st) < 0) {
+off_t file_get_size(int file_fd) {
+    struct stat _st;
+    if (fstat(file_fd, &_st) < 0) {
         LOG_ERROR("failed to stat file: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
 
-    return st.st_size;
+    return _st.st_size;
 }
 
 /**
- * @brief The epoll event handler for the listener worker.
+ * @brief The poll handler for the listener.
  *
- * @param[in] listen_worker The listener worker instance.
- * @param[in] events        The epoll events.
- * @param[in] data          The data of the event.
+ * @param[in] listener The listener thread instance.
+ * @param[in] events   The poll events.
+ * @param[in] data     The data of the event.
  */
-void listen_worker_event_handler(worker_t *listen_worker, uint32_t events, void *data) {
-    listen_context_t *context = (listen_context_t *)listen_worker->context;
-    tcp_server_t *server = (tcp_server_t *)data;
-    tcp_connection_t *new_connection;
+void listener_poll_handler(thread_t *listener, uint32_t events, void *data) {
+    listener_context_t *_context = (listener_context_t *)listener->context;
+    tcp_server_t *_server = (tcp_server_t *)data;
+    tcp_connection_t *_connection;
 
-    for (;;) {
+    for (int cycle;;) {
         if ((events & (EPOLLIN | EPOLLPRI)) == 0) {
             continue;
         }
-
-        new_connection = malloc(sizeof(tcp_connection_t));
-        if (tcp_server_accept(server, new_connection) < 0) {
-            free(new_connection);
+        _connection = connection_create(_server, _context->config);
+        if (tcp_server_accept(_server, _connection) < 0) {
+            free(_connection);
             return;
         }
 
-        for (;; context->cycle = (context->cycle + 1) % WORKER_COUNT) {
-            if (process_workers[context->cycle].watchlist_count >= process_workers[context->cycle].watchlist_size) {
+        pthread_mutex_lock(&_context->mutex->lock);
+        for (cycle = _context->mutex->cycle;; cycle = (cycle + 1) % _context->mutex->worker_count) {
+            if (workers[cycle].watchlist_count >= workers[cycle].watchlist_size) {
                 continue;
             }
 
-            if (worker_send(&process_workers[context->cycle], (void *)new_connection, sizeof(tcp_connection_t)) < 0) {
+            if (thread_send(&workers[cycle], (void *)_connection, sizeof(tcp_connection_t)) < 0) {
                 continue;
             }
 
             break;
         }
+        _context->mutex->cycle = (cycle + 1) % _context->mutex->worker_count;
+        pthread_mutex_unlock(&_context->mutex->lock);
     }
 }
 
 /**
- * @brief The thread stop handler for the listener worker.
+ * @brief The stop handler for the listener.
  *
- * @param[in] listen_worker The listener worker instance.
- * @param[in] signum        The signal number.
+ * @param[in] listener The listener thread instance.
+ * @param[in] signum   The signal number.
  */
-void listen_worker_stop_handler(worker_t *listen_worker, int signum) {
-    listen_context_t *context = (listen_context_t *)listen_worker->context;
+void listener_stop_handler(thread_t *listener, int signum) {
+    listener_context_t *_context = (listener_context_t *)listener->context;
 
     if (signum != SIGINT) {
         return;
     }
 
-    tcp_server_close(context->server);
+    tcp_server_close(_context->server);
 }
 
 /**
- * @brief The new data handler for the process worker.
+ * @brief Initialize the listener instance.
  *
- * @param[in] process_worker The process worker instance.
- * @param[in] data           The incoming new data.
- * @param[in] size           The size of the data.
+ * @param[out] listener The listener thread instance.
+ * @param[in]  config   The server configuration.
+ *
+ * @return Result code, 0 for success or -1 for errors.
  */
-void process_worker_data_handler(worker_t *process_worker, void *data, size_t size) {
+int listener_init(thread_t *listener, server_config_t *config) {
+    listener_context_t *_context = listener_context_create(config);
+
+    if (tcp_server_init(_context->server) < 0) {
+        return -1;
+    }
+
+    listener->data_handler = NULL;
+    listener->poll_handler = listener_poll_handler;
+    listener->stop_handler = listener_stop_handler;
+    listener->context = _context;
+
+    if (thread_init(listener, _context->watchlist_buffer, 2) < 0) {
+        return -1;
+    }
+    if (thread_add_watchlist(listener, EPOLLIN | EPOLLET, _context->server->socket, (void *)_context->server) < 0) {
+        return -1;
+    }
+    if (thread_run(listener) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Clean all related memory from the listener instance.
+ *
+ * @param[out] listener The listener thread instance.
+ */
+void listener_clean(thread_t *listener) {
+    free(listener->context);
+}
+
+/**
+ * @brief The new data handler for the worker.
+ *
+ * @param[in] worker The worker thread instance.
+ * @param[in] data   The incoming new data.
+ * @param[in] size   The size of the data.
+ */
+void worker_data_handler(thread_t *worker, void *data, size_t size) {
     if (size != sizeof(tcp_connection_t)) {
         return;
     }
 
-    tcp_connection_t *new_connection = (tcp_connection_t *)data;
-    if (worker_add_watchlist(process_worker, EPOLLIN | EPOLLET, new_connection->socket, (void *)new_connection) < 0) {
+    tcp_connection_t *_connection = (tcp_connection_t *)data;
+    if (thread_add_watchlist(worker, EPOLLIN | EPOLLET, _connection->socket, (void *)_connection) < 0) {
         return;
     }
 }
 
 /**
- * @brief The epoll event handler for the process worker.
+ * @brief The poll handler for the worker.
  *
- * @param[in] process_worker The listener worker instance.
- * @param[in] events         The epoll events.
- * @param[in] data           The data of the event.
+ * @param[in] worker The worker thread instance.
+ * @param[in] events The poll events.
+ * @param[in] data   The data of the event.
  */
-void process_worker_event_handler(worker_t *process_worker, uint32_t events, void *data) {
-    process_context_t *context = (process_context_t *)process_worker->context;
-    tcp_connection_t *connection = (tcp_connection_t *)data;
+void worker_poll_handler(thread_t *worker, uint32_t events, void *data) {
+    worker_context_t *_context = (worker_context_t *)worker->context;
+    tcp_connection_t *_connection = (tcp_connection_t *)data;
+    connection_context_t *_connection_context = (connection_context_t *)_connection->context;
 
+    size_t _buffer_size = _context->buffer_size, _file_path_size = _context->file_path_size, _bytes_to_send;
+    char *_buffer = _context->buffer, *_file_path = _context->file_path,
+         *_root_path = _connection_context->config->root_path;
+    http_message_t *_message = _context->message;
+    int _error_code, _file_fd;
+    ssize_t _received_size;
+    off_t _file_size;
+
+    /* client connection has issue */
     if (events & (EPOLLERR)) {
-        int conn_error = tcp_connection_get_error(connection);
-        LOG_ERROR("connection error: %s (%d)\n", strerror(conn_error), conn_error);
+        _error_code = tcp_connection_get_error(_connection);
+        LOG_ERROR("connection error: %s (%d)\n", strerror(_error_code), _error_code);
     }
+
+    /* client send a new http request */
     if (events & (EPOLLIN | EPOLLPRI)) {
-        context->received_size = tcp_connection_receive(connection, context->buffer, context->buffer_size, 0);
-        if (context->received_size < 0) {
-            context->bytes_to_send = (size_t)http_message_error(context->buffer, context->buffer_size);
-            if (tcp_connection_send(connection, context->buffer, context->bytes_to_send, 0) < 0) {
-                worker_remove_watchlist(process_worker, connection->socket);
-                tcp_connection_close(connection, context->buffer, context->buffer_size);
-                free(connection);
-            }
-            return;
-        }
-        if (context->received_size == 0) {
-            worker_remove_watchlist(process_worker, connection->socket);
-            tcp_connection_close(connection, context->buffer, context->buffer_size);
-            free(connection);
-            return;
-        }
-
-        if (http_parse_request(&context->message, context->buffer, context->received_size) < 0) {
-            context->bytes_to_send = (size_t)http_message_error(context->buffer, context->buffer_size);
-            if (tcp_connection_send(connection, context->buffer, context->bytes_to_send, 0) < 0) {
-                worker_remove_watchlist(process_worker, connection->socket);
-                tcp_connection_close(connection, context->buffer, context->buffer_size);
-                free(connection);
+        /* get the request string */
+        _received_size = tcp_connection_receive(_connection, _buffer, _buffer_size, 0);
+        if (_received_size < 0) {
+            _bytes_to_send = (size_t)http_message_error(_buffer, _buffer_size);
+            if (tcp_connection_send(_connection, _buffer, _bytes_to_send, 0) < 0) {
+                thread_remove_watchlist(worker, _connection->socket);
+                tcp_connection_close(_connection, _buffer, _buffer_size);
+                free(_connection);
             }
             return;
         }
 
-        if (strncmp(context->message.method, "GET", 3) != 0) {
-            context->bytes_to_send = (size_t)http_message_not_allowed(context->buffer, context->buffer_size);
-            if (tcp_connection_send(connection, context->buffer, context->bytes_to_send, 0) < 0) {
-                worker_remove_watchlist(process_worker, connection->socket);
-                tcp_connection_close(connection, context->buffer, context->buffer_size);
-                free(connection);
+        if (_received_size == 0) {
+            thread_remove_watchlist(worker, _connection->socket);
+            tcp_connection_close(_connection, _buffer, _buffer_size);
+            free(_connection);
+            return;
+        }
+
+        /* parse request as http message */
+        if (http_parse_request(_message, _buffer, _received_size) < 0) {
+            _bytes_to_send = (size_t)http_message_error(_buffer, _buffer_size);
+            if (tcp_connection_send(_connection, _buffer, _bytes_to_send, 0) < 0) {
+                thread_remove_watchlist(worker, _connection->socket);
+                tcp_connection_close(_connection, _buffer, _buffer_size);
+                free(_connection);
             }
             return;
         }
 
-        if (http_resolve_file_path(&context->message, context->file_path, PATH_BUFFER_SIZE) < 0) {
-            context->bytes_to_send = (size_t)http_message_not_found(context->buffer, context->buffer_size);
-            if (tcp_connection_send(connection, context->buffer, context->bytes_to_send, 0) < 0) {
-                worker_remove_watchlist(process_worker, connection->socket);
-                tcp_connection_close(connection, context->buffer, context->buffer_size);
-                free(connection);
+        /* could only handle http get method */
+        if (strncmp(_message->method, "GET", 3) != 0) {
+            _bytes_to_send = (size_t)http_message_not_allowed(_buffer, _buffer_size);
+            if (tcp_connection_send(_connection, _buffer, _bytes_to_send, 0) < 0) {
+                thread_remove_watchlist(worker, _connection->socket);
+                tcp_connection_close(_connection, _buffer, _buffer_size);
+                free(_connection);
             }
             return;
         }
 
-        if ((context->file_fd = open(context->file_path, O_RDONLY)) < 0) {
+        /* try looking for the requested resource */
+        if (http_resolve_file_path(_message, _root_path, _file_path, _file_path_size) < 0) {
+            _bytes_to_send = (size_t)http_message_not_found(_buffer, _buffer_size);
+            if (tcp_connection_send(_connection, _buffer, _bytes_to_send, 0) < 0) {
+                thread_remove_watchlist(worker, _connection->socket);
+                tcp_connection_close(_connection, _buffer, _buffer_size);
+                free(_connection);
+            }
+            return;
+        }
+
+        /* try to open the resource */
+        if ((_file_fd = open(_context->file_path, O_RDONLY)) < 0) {
             LOG_ERROR("failed to open file: %s (%d)\n", strerror(errno), errno);
-            context->bytes_to_send = (size_t)http_message_not_found(context->buffer, context->buffer_size);
-            if (tcp_connection_send(connection, context->buffer, context->bytes_to_send, 0) < 0) {
-                worker_remove_watchlist(process_worker, connection->socket);
-                tcp_connection_close(connection, context->buffer, context->buffer_size);
-                free(connection);
+            _bytes_to_send = (size_t)http_message_not_found(_buffer, _buffer_size);
+            if (tcp_connection_send(_connection, _buffer, _bytes_to_send, 0) < 0) {
+                thread_remove_watchlist(worker, _connection->socket);
+                tcp_connection_close(_connection, _buffer, _buffer_size);
+                free(_connection);
             }
             return;
         }
 
-        context->file_size = get_file_size(context->file_fd);
-        context->bytes_to_send =
-            http_header_file(context->buffer, context->buffer_size, context->file_path, context->file_size);
-        if (tcp_connection_send(connection, context->buffer, context->bytes_to_send, 0) < 0) {
-            worker_remove_watchlist(process_worker, connection->socket);
-            tcp_connection_close(connection, context->buffer, context->buffer_size);
-            free(connection);
+        /* send the http header first */
+        _file_size = file_get_size(_file_fd);
+        _bytes_to_send = http_header_file(_buffer, _buffer_size, _file_path, _file_size);
+        if (tcp_connection_send(_connection, _buffer, _bytes_to_send, 0) < 0) {
+            thread_remove_watchlist(worker, _connection->socket);
+            tcp_connection_close(_connection, _buffer, _buffer_size);
+            free(_connection);
 
-            if (close(context->file_fd) < 0) {
+            if (close(_file_fd) < 0) {
                 LOG_ERROR("failed to close the file: %s (%d)\n", strerror(errno), errno);
             }
             return;
         }
 
-        if (tcp_connection_sendfile(connection, context->file_fd, context->file_size) < 0) {
-            worker_remove_watchlist(process_worker, connection->socket);
-            tcp_connection_close(connection, context->buffer, context->buffer_size);
-            free(connection);
+        /* send the actual resource */
+        if (tcp_connection_sendfile(_connection, _file_fd, _file_size) < 0) {
+            thread_remove_watchlist(worker, _connection->socket);
+            tcp_connection_close(_connection, _buffer, _buffer_size);
+            free(_connection);
 
-            if (close(context->file_fd) < 0) {
+            if (close(_file_fd) < 0) {
                 LOG_ERROR("failed to close the file: %s (%d)\n", strerror(errno), errno);
             }
             return;
         }
 
-        if (close(context->file_fd) < 0) {
+        /* close the resource */
+        if (close(_file_fd) < 0) {
             LOG_ERROR("failed to close the file: %s (%d)\n", strerror(errno), errno);
         }
     }
+
+    /* client has close the connection */
     if (events & (EPOLLHUP | EPOLLRDHUP)) {
-        tcp_connection_close(connection, context->buffer, context->buffer_size);
-        worker_remove_watchlist(process_worker, connection->socket);
-        free(connection);
+        tcp_connection_close(_connection, _buffer, _buffer_size);
+        thread_remove_watchlist(worker, _connection->socket);
+        free(_connection);
         return;
     }
+}
+
+/**
+ * @brief Initialize the worker instance.
+ *
+ * @param[out] worker The worker thread instance.
+ *
+ * @return Result code, 0 for success or -1 for errors.
+ */
+int worker_init(thread_t *worker) {
+    worker_context_t *_context = worker_context_create();
+
+    worker->data_handler = worker_data_handler;
+    worker->poll_handler = worker_poll_handler;
+    worker->stop_handler = NULL;
+    worker->context = _context;
+
+    if (thread_init(worker, _context->watchlist_buffer, main_config.max_connection) < 0) {
+        return -1;
+    }
+    if (thread_run(worker) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Clean all related memory from the worker instance.
+ *
+ * @param[out] worker The worker thread instance.
+ */
+void worker_clean(thread_t *worker) {
+    free(worker->context);
 }
 
 /**
@@ -256,10 +509,12 @@ void process_worker_event_handler(worker_t *process_worker, uint32_t events, voi
  */
 void signal_handler(int signum) {
     if (signum == SIGINT) {
-        for (int i = 0; i < WORKER_COUNT; i++) {
-            worker_stop(&process_workers[i], signum);
+        for (int i = 0; i < main_config.listener_count; i++) {
+            thread_stop(&listeners[i], signum);
         }
-        worker_stop(&listen_worker, signum);
+        for (int i = 0; i < main_config.worker_count; i++) {
+            thread_stop(&workers[i], signum);
+        }
     }
 }
 
@@ -269,65 +524,48 @@ void signal_handler(int signum) {
  * @return The result code of the program.
  */
 int main(void) {
-    process_context_t process_contexts[WORKER_COUNT] = {0};
+    get_config(&main_config);
 
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        process_contexts[i].buffer_size = WORKER_BUFFER_SIZE;
+    listener_mutex = (listener_mutex_t){.cycle = 0, .worker_count = main_config.worker_count};
+    if (pthread_mutex_init(&listener_mutex.lock, NULL) < 0) {
+        return errno;
+    }
 
-        process_workers[i].watchlist = process_watchlist_buffers[i];
-        process_workers[i].watchlist_size = MAX_CONNECTION;
-        process_workers[i].context = (void *)&process_contexts[i];
-
-        process_workers[i].data_handler = process_worker_data_handler;
-        process_workers[i].event_handler = process_worker_event_handler;
-        process_workers[i].stop_handler = NULL;
-        if (worker_init(&process_workers[i]) < 0 || worker_run(&process_workers[i]) < 0) {
+    workers = malloc(main_config.worker_count * sizeof(thread_t));
+    for (int i = 0; i < main_config.worker_count; i++) {
+        if (worker_init(&workers[i]) < 0) {
             return errno;
         }
     }
 
-    tcp_server_t server = (tcp_server_t){
-        .max_connection = MAX_CONNECTION,
-        .address = (struct sockaddr_in){
-            .sin_family = AF_INET,
-            .sin_addr.s_addr = INADDR_ANY,
-            .sin_port = htons(LISTEN_PORT),
-        },
-    };
-    if (tcp_server_init(&server) < 0) {
-        return errno;
-    }
-
-    listen_context_t listen_context = {.server = &server, .cycle = 0};
-    struct epoll_event listen_watchlist_buffer[2] = {0};
-
-    listen_worker.watchlist = listen_watchlist_buffer;
-    listen_worker.watchlist_size = 2;
-    listen_worker.context = (void *)&listen_context;
-
-    listen_worker.data_handler = NULL;
-    listen_worker.event_handler = listen_worker_event_handler;
-    listen_worker.stop_handler = listen_worker_stop_handler;
-    if (worker_init(&listen_worker) < 0) {
-        return errno;
-    }
-    if (worker_add_watchlist(&listen_worker, EPOLLIN | EPOLLET, server.socket, (void *)&server) < 0) {
-        return errno;
-    }
-    if (worker_run(&listen_worker) < 0) {
-        return errno;
+    listeners = malloc(main_config.listener_count * sizeof(thread_t));
+    for (int i = 0; i < main_config.listener_count; i++) {
+        if (listener_init(&listeners[i], &main_config.servers[i]) < 0) {
+            return errno;
+        }
     }
 
     signal(SIGINT, signal_handler);
     signal(SIGPIPE, SIG_IGN);
 
-    if (worker_wait(&listen_worker) < 0) {
-        return errno;
-    }
-    for (int i = 0; i < WORKER_COUNT; i++) {
-        if (worker_wait(&process_workers[i]) < 0) {
+    for (int i = 0; i < main_config.listener_count; i++) {
+        if (thread_wait(&listeners[i]) < 0) {
             return errno;
         }
+        listener_clean(&listeners[i]);
+    }
+    free(listeners);
+
+    for (int i = 0; i < main_config.worker_count; i++) {
+        if (thread_wait(&workers[i]) < 0) {
+            return errno;
+        }
+        worker_clean(&workers[i]);
+    }
+    free(workers);
+
+    if (pthread_mutex_destroy(&listener_mutex.lock) < 0) {
+        return errno;
     }
 
     return 0;

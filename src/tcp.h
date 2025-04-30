@@ -10,7 +10,8 @@
  * @brief TCP server representation.
  */
 typedef struct tcp_server {
-    struct sockaddr_in address;
+    struct sockaddr *address;
+    socklen_t address_length;
     int socket, max_connection;
 } tcp_server_t;
 
@@ -18,8 +19,10 @@ typedef struct tcp_server {
  * @brief TCP connection representation.
  */
 typedef struct tcp_connection {
-    struct sockaddr_in address;
+    struct sockaddr *address;
+    socklen_t address_length;
     int socket;
+    void *context;
 } tcp_connection_t;
 
 /**

@@ -14,7 +14,7 @@
  * Initialize TCP socket.
  */
 int tcp_server_init(tcp_server_t *server) {
-    if ((server->socket = socket(AF_INET, SOCK_STREAM, 0)) <= 0) {
+    if ((server->socket = socket(server->address->sa_family, SOCK_STREAM, 0)) <= 0) {
         LOG_ERROR("failed to create tcp socket: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
@@ -28,7 +28,16 @@ int tcp_server_init(tcp_server_t *server) {
         LOG_ERROR("failed to set the tcp socket reuse address: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
-    if (bind(server->socket, (struct sockaddr *)&server->address, sizeof(struct sockaddr_in)) < 0) {
+
+    if (server->address->sa_family == AF_INET6) {
+        socket_option = 0;
+        if (setsockopt(server->socket, IPPROTO_IPV6, IPV6_V6ONLY, &socket_option, sizeof(int)) < 0) {
+            LOG_ERROR("failed to set the tcp socket reuse address: %s (%d)\n", strerror(errno), errno);
+            return -1;
+        }
+    }
+
+    if (bind(server->socket, server->address, server->address_length) < 0) {
         LOG_ERROR("failed to bind the tcp socket to given host and port: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
@@ -44,9 +53,7 @@ int tcp_server_init(tcp_server_t *server) {
  * Accept new connection and initialize it.
  */
 int tcp_server_accept(tcp_server_t *server, tcp_connection_t *connection) {
-    socklen_t address_size = sizeof(struct sockaddr_in);
-
-    connection->socket = accept(server->socket, (struct sockaddr *)&connection->address, &address_size);
+    connection->socket = accept(server->socket, connection->address, &connection->address_length);
     if (connection->socket < 0) {
         if (errno == EAGAIN) {
             return -1;
@@ -61,23 +68,23 @@ int tcp_server_accept(tcp_server_t *server, tcp_connection_t *connection) {
         return -1;
     }
 
-    int socket_option = 1;
-    if (setsockopt(connection->socket, SOL_SOCKET, SO_KEEPALIVE, &socket_option, sizeof(int)) < 0) {
+    int _socket_option = 1;
+    if (setsockopt(connection->socket, SOL_SOCKET, SO_KEEPALIVE, &_socket_option, sizeof(int)) < 0) {
         LOG_ERROR("failed to set the connection socket keepalive: %s (%d)\n", strerror(errno), errno);
     }
 
-    struct linger linger_option = (struct linger){.l_onoff = 1, .l_linger = 0};
-    if (setsockopt(connection->socket, SOL_SOCKET, SO_LINGER, &linger_option, sizeof(struct linger)) < 0) {
+    struct linger _linger_option = (struct linger){.l_onoff = 1, .l_linger = 0};
+    if (setsockopt(connection->socket, SOL_SOCKET, SO_LINGER, &_linger_option, sizeof(struct linger)) < 0) {
         LOG_ERROR("failed to set the connection socket linger: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
 
-    struct timeval timeout_option = (struct timeval){.tv_sec = 10, .tv_usec = 0};
-    if (setsockopt(connection->socket, SOL_SOCKET, SO_RCVTIMEO, &timeout_option, sizeof(struct timeval)) < 0) {
+    struct timeval _timeout_option = (struct timeval){.tv_sec = 10, .tv_usec = 0};
+    if (setsockopt(connection->socket, SOL_SOCKET, SO_RCVTIMEO, &_timeout_option, sizeof(struct timeval)) < 0) {
         LOG_ERROR("failed to set the connection socket receive timeout: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
-    if (setsockopt(connection->socket, SOL_SOCKET, SO_SNDTIMEO, &timeout_option, sizeof(struct timeval)) < 0) {
+    if (setsockopt(connection->socket, SOL_SOCKET, SO_SNDTIMEO, &_timeout_option, sizeof(struct timeval)) < 0) {
         LOG_ERROR("failed to set the connection socket send timeout: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
@@ -100,14 +107,14 @@ void tcp_server_close(tcp_server_t *server) {
  * Receive data into the buffer from the connection socket.
  */
 ssize_t tcp_connection_receive(tcp_connection_t *connection, char *buffer, size_t buffer_size, int flags) {
-    ssize_t bytes_received;
+    ssize_t _bytes_received;
 
     for (;;) {
-        bytes_received = recv(connection->socket, buffer, buffer_size, flags);
-        if (bytes_received == 0) {
+        _bytes_received = recv(connection->socket, buffer, buffer_size, flags);
+        if (_bytes_received == 0) {
             return 0;
         }
-        if (bytes_received < 0) {
+        if (_bytes_received < 0) {
             if (errno == EAGAIN) {
                 continue;
             }
@@ -116,23 +123,23 @@ ssize_t tcp_connection_receive(tcp_connection_t *connection, char *buffer, size_
         }
         break;
     }
-    buffer[bytes_received] = '\0';
+    buffer[_bytes_received] = '\0';
 
-    return bytes_received;
+    return _bytes_received;
 }
 
 /**
  * Send data from the buffer into the connection socket.
  */
 ssize_t tcp_connection_send(tcp_connection_t *connection, char *buffer, size_t buffer_size, int flags) {
-    size_t total_bytes_sent = 0;
+    size_t _total_bytes_sent = 0;
 
-    for (ssize_t bytes_sent; total_bytes_sent < buffer_size; total_bytes_sent += (size_t)bytes_sent) {
-        bytes_sent = send(connection->socket, buffer + total_bytes_sent, buffer_size - total_bytes_sent, flags);
-        if (bytes_sent == 0) {
+    for (ssize_t _bytes_sent; _total_bytes_sent < buffer_size; _total_bytes_sent += (size_t)_bytes_sent) {
+        _bytes_sent = send(connection->socket, buffer + _total_bytes_sent, buffer_size - _total_bytes_sent, flags);
+        if (_bytes_sent == 0) {
             return 0;
         }
-        if (bytes_sent < 0) {
+        if (_bytes_sent < 0) {
             if (errno == EAGAIN) {
                 continue;
             }
@@ -141,20 +148,20 @@ ssize_t tcp_connection_send(tcp_connection_t *connection, char *buffer, size_t b
         }
     }
 
-    return total_bytes_sent;
+    return _total_bytes_sent;
 }
 
 /**
  * Send file into the connection socket.
  */
 int tcp_connection_sendfile(tcp_connection_t *connection, int file_fd, off_t file_size) {
-    off_t offset = 0;
-    for (ssize_t bytes_sent; offset < file_size;) {
-        bytes_sent = sendfile(connection->socket, file_fd, &offset, (size_t)(file_size - offset));
-        if (bytes_sent == 0) {
+    off_t _offset = 0;
+    for (ssize_t _bytes_sent; _offset < file_size;) {
+        _bytes_sent = sendfile(connection->socket, file_fd, &_offset, (size_t)(file_size - _offset));
+        if (_bytes_sent == 0) {
             return 0;
         }
-        if (bytes_sent < 0) {
+        if (_bytes_sent < 0) {
             if (errno == EAGAIN) {
                 continue;
             }
@@ -170,14 +177,14 @@ int tcp_connection_sendfile(tcp_connection_t *connection, int file_fd, off_t fil
  * Get socket error number.
  */
 int tcp_connection_get_error(tcp_connection_t *connection) {
-    socklen_t size = sizeof(int);
-    int socket_error;
+    socklen_t _size = sizeof(int);
+    int _socket_error;
 
-    if (getsockopt(connection->socket, SOL_SOCKET, SO_ERROR, &socket_error, &size) < 0) {
+    if (getsockopt(connection->socket, SOL_SOCKET, SO_ERROR, &_socket_error, &_size) < 0) {
         LOG_ERROR("failed to get the connection socket error: %s (%d)\n", strerror(errno), errno);
     }
 
-    return socket_error;
+    return _socket_error;
 }
 
 /**
@@ -189,8 +196,8 @@ void tcp_connection_close(tcp_connection_t *connection, char *buffer, size_t buf
             LOG_ERROR("failed to shutdown connection socket: %s (%d)\n", strerror(errno), errno);
         }
     }
-    for (ssize_t bytes_received = 1; bytes_received > 0;) {
-        bytes_received = recv(connection->socket, buffer, buffer_size, MSG_TRUNC);
+    for (ssize_t _bytes_received = 1; _bytes_received > 0;) {
+        _bytes_received = recv(connection->socket, buffer, buffer_size, MSG_TRUNC);
     }
     for (;;) {
         if (close(connection->socket) == 0) {
