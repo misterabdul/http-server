@@ -2,7 +2,6 @@
 #define tcp_h
 
 #include <netinet/in.h>
-#include <sys/epoll.h>
 
 #include "config.h"
 

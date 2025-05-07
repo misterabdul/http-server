@@ -1,8 +1,17 @@
-#ifndef thread_h
-#define thread_h
+#ifndef core_thread_h
+#define core_thread_h
 
 #include <pthread.h>
+
+#undef __linux__
+#if __linux__
 #include <sys/epoll.h>
+#define POLLET    EPOLLET
+#define POLLRDHUP EPOLLRDHUP
+#else
+#define POLLET    0
+#define POLLRDHUP 0
+#endif
 
 /**
  * @brief Thread data structure.
@@ -10,25 +19,25 @@
 typedef struct thread {
     pthread_t id;
     pthread_attr_t attr;
-    struct epoll_event *watchlist;
-    int epoll_fd, pipe_fds[2], watchlist_count, watchlist_size;
+    size_t watchlist_size, watchlist_count;
+    int pipe_fds[2];
     void *context;
 
     void (*data_handler)(struct thread *thread, void *data, size_t size);
-    void (*poll_handler)(struct thread *thread, uint32_t events, void *data);
+    void (*poll_handler)(struct thread *thread, int events, void *data);
     void (*stop_handler)(struct thread *thread, int signum);
 } thread_t;
+
+thread_t *thread_new(size_t watchlist_size);
 
 /**
  * @brief Initialize the thread.
  *
  * @param[out] thread                The thread instance.
- * @param[in]  watchlist_buffer      The watchlist buffer for the thread.
- * @param[in]  watchlist_buffer_size The watchlist buffer size.
  *
  * @return Result code, 0 for success or -1 for errors.
  */
-int thread_init(thread_t *thread, struct epoll_event *watchlist_buffer, size_t watchlist_buffer_size);
+int thread_init(thread_t *thread);
 
 /**
  * @brief Run the thread in the background.
@@ -73,13 +82,13 @@ int thread_send(thread_t *thread, void *data, size_t size);
  * @brief Add file descriptor to the thread's watchlist.
  *
  * @param[out] thread The thread instance.
- * @param[in]  events The epoll event to be watched.
+ * @param[in]  events The poll event to be watched.
  * @param[in]  fd     The file descriptor to be watched.
  * @param[in]  data   The data to be included.
  *
  * @return Result code, 0 for success or -1 for errors.
  */
-int thread_add_watchlist(thread_t *thread, uint32_t events, int fd, void *data);
+int thread_add_watchlist(thread_t *thread, int events, int fd, void *data);
 
 /**
  * @brief Remove file descriptor to the thread's watchlist.

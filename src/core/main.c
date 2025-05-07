@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -26,7 +27,6 @@ typedef struct listener_mutex {
  * @brief Listener context data.
  */
 typedef struct listener_context {
-    struct epoll_event *watchlist_buffer;
     server_config_t *config;
     listener_mutex_t *mutex;
     tcp_server_t *server;
@@ -36,7 +36,6 @@ typedef struct listener_context {
  * @brief Worker context data.
  */
 typedef struct worker_context {
-    struct epoll_event *watchlist_buffer;
     size_t buffer_size, file_path_size;
     char *buffer, *file_path;
     http_message_t *message;
@@ -63,12 +62,12 @@ listener_mutex_t listener_mutex;
 /**
  * @brief Global listener thread instances.
  */
-thread_t *listeners;
+thread_t **listeners;
 
 /**
  * @brief Global worker thread instances.
  */
-thread_t *workers;
+thread_t **workers;
 
 /**
  * @brief Allocate memory and initialize listener context data.
@@ -86,13 +85,10 @@ listener_context_t *listener_context_create(server_config_t *server_config) {
     if (server_config->family == AF_INET) {
         /* IPv4 configuration*/
 
-        _context = malloc(
-            sizeof(listener_context_t) + sizeof(struct sockaddr_in) + sizeof(tcp_server_t) +
-            (2 * sizeof(struct epoll_event))
-        );
+        _context = malloc(sizeof(listener_context_t) + sizeof(tcp_server_t) + sizeof(struct sockaddr_in));
 
-        struct sockaddr_in *_address = (struct sockaddr_in *)((char *)_context + sizeof(listener_context_t));
-        _server = (tcp_server_t *)((char *)_address + sizeof(struct sockaddr_in));
+        _server = (tcp_server_t *)((char *)_context + sizeof(listener_context_t));
+        struct sockaddr_in *_address = (struct sockaddr_in *)((char *)_server + sizeof(tcp_server_t));
 
         *_address = (struct sockaddr_in){.sin_family = AF_INET, .sin_port = htons(server_config->port)};
         inet_ntop(AF_INET, &(_address->sin_addr), server_config->address, INET_ADDRSTRLEN);
@@ -105,13 +101,10 @@ listener_context_t *listener_context_create(server_config_t *server_config) {
     } else {
         /* IPv6 configuration*/
 
-        _context = malloc(
-            sizeof(listener_context_t) + sizeof(struct sockaddr_in6) + sizeof(tcp_server_t) +
-            (2 * sizeof(struct epoll_event))
-        );
+        _context = malloc(sizeof(listener_context_t) + sizeof(tcp_server_t) + sizeof(struct sockaddr_in6));
 
-        struct sockaddr_in6 *_address6 = (struct sockaddr_in6 *)((char *)_context + sizeof(listener_context_t));
-        _server = (tcp_server_t *)((char *)_address6 + sizeof(struct sockaddr_in6));
+        _server = (tcp_server_t *)((char *)_context + sizeof(listener_context_t));
+        struct sockaddr_in6 *_address6 = (struct sockaddr_in6 *)((char *)_server + sizeof(tcp_server_t));
 
         *_address6 = (struct sockaddr_in6){.sin6_family = AF_INET6, .sin6_port = htons(server_config->port)};
         inet_ntop(AF_INET, &(_address6->sin6_addr), server_config->address, INET_ADDRSTRLEN);
@@ -124,7 +117,6 @@ listener_context_t *listener_context_create(server_config_t *server_config) {
     }
 
     *_context = (listener_context_t){
-        .watchlist_buffer = (struct epoll_event *)((char *)_server + sizeof(tcp_server_t)),
         .mutex = &listener_mutex,
         .config = server_config,
         .server = _server,
@@ -141,15 +133,12 @@ listener_context_t *listener_context_create(server_config_t *server_config) {
  * @note Contains pointer arithmetic, allocate one big block of memory for everything.
  */
 worker_context_t *worker_context_create(void) {
-    worker_context_t *_context = malloc(
-        sizeof(worker_context_t) + WORKER_BUFFER_SIZE + PATH_BUFFER_SIZE + sizeof(http_message_t) +
-        (main_config.max_connection * sizeof(struct epoll_event))
-    );
+    worker_context_t *_context =
+        malloc(sizeof(worker_context_t) + WORKER_BUFFER_SIZE + PATH_BUFFER_SIZE + sizeof(http_message_t));
     char *_buffer = (char *)_context + sizeof(worker_context_t), *_path_buffer = _buffer + WORKER_BUFFER_SIZE;
     http_message_t *_message = (http_message_t *)(_path_buffer + PATH_BUFFER_SIZE);
 
     *_context = (worker_context_t){
-        .watchlist_buffer = (struct epoll_event *)((char *)_message + sizeof(http_message_t)),
         .file_path_size = PATH_BUFFER_SIZE,
         .buffer_size = WORKER_BUFFER_SIZE,
         .file_path = _path_buffer,
@@ -227,13 +216,13 @@ off_t file_get_size(int file_fd) {
  * @param[in] events   The poll events.
  * @param[in] data     The data of the event.
  */
-void listener_poll_handler(thread_t *listener, uint32_t events, void *data) {
+void listener_poll_handler(thread_t *listener, int events, void *data) {
     listener_context_t *_context = (listener_context_t *)listener->context;
     tcp_server_t *_server = (tcp_server_t *)data;
     tcp_connection_t *_connection;
 
     for (int cycle;;) {
-        if ((events & (EPOLLIN | EPOLLPRI)) == 0) {
+        if ((events & (POLLIN | POLLPRI)) == 0) {
             continue;
         }
         _connection = connection_create(_server, _context->config);
@@ -244,11 +233,11 @@ void listener_poll_handler(thread_t *listener, uint32_t events, void *data) {
 
         pthread_mutex_lock(&_context->mutex->lock);
         for (cycle = _context->mutex->cycle;; cycle = (cycle + 1) % _context->mutex->worker_count) {
-            if (workers[cycle].watchlist_count >= workers[cycle].watchlist_size) {
+            if (workers[cycle]->watchlist_count >= workers[cycle]->watchlist_size) {
                 continue;
             }
 
-            if (thread_send(&workers[cycle], (void *)_connection, sizeof(tcp_connection_t)) < 0) {
+            if (thread_send(workers[cycle], (void *)_connection, sizeof(tcp_connection_t)) < 0) {
                 continue;
             }
 
@@ -295,10 +284,10 @@ int listener_init(thread_t *listener, server_config_t *config) {
     listener->stop_handler = listener_stop_handler;
     listener->context = _context;
 
-    if (thread_init(listener, _context->watchlist_buffer, 2) < 0) {
+    if (thread_init(listener) < 0) {
         return -1;
     }
-    if (thread_add_watchlist(listener, EPOLLIN | EPOLLET, _context->server->socket, (void *)_context->server) < 0) {
+    if (thread_add_watchlist(listener, POLLIN | POLLET, _context->server->socket, (void *)_context->server) < 0) {
         return -1;
     }
     if (thread_run(listener) < 0) {
@@ -330,7 +319,7 @@ void worker_data_handler(thread_t *worker, void *data, size_t size) {
     }
 
     tcp_connection_t *_connection = (tcp_connection_t *)data;
-    if (thread_add_watchlist(worker, EPOLLIN | EPOLLET, _connection->socket, (void *)_connection) < 0) {
+    if (thread_add_watchlist(worker, POLLIN | POLLET, _connection->socket, (void *)_connection) < 0) {
         return;
     }
 }
@@ -342,7 +331,7 @@ void worker_data_handler(thread_t *worker, void *data, size_t size) {
  * @param[in] events The poll events.
  * @param[in] data   The data of the event.
  */
-void worker_poll_handler(thread_t *worker, uint32_t events, void *data) {
+void worker_poll_handler(thread_t *worker, int events, void *data) {
     worker_context_t *_context = (worker_context_t *)worker->context;
     tcp_connection_t *_connection = (tcp_connection_t *)data;
     connection_context_t *_connection_context = (connection_context_t *)_connection->context;
@@ -356,13 +345,13 @@ void worker_poll_handler(thread_t *worker, uint32_t events, void *data) {
     off_t _file_size;
 
     /* client connection has issue */
-    if (events & (EPOLLERR)) {
+    if (events & (POLLERR)) {
         _error_code = tcp_connection_get_error(_connection);
         LOG_ERROR("connection error: %s (%d)\n", strerror(_error_code), _error_code);
     }
 
     /* client send a new http request */
-    if (events & (EPOLLIN | EPOLLPRI)) {
+    if (events & (POLLIN | POLLPRI)) {
         /* get the request string */
         _received_size = tcp_connection_receive(_connection, _buffer, _buffer_size, 0);
         if (_received_size < 0) {
@@ -460,7 +449,7 @@ void worker_poll_handler(thread_t *worker, uint32_t events, void *data) {
     }
 
     /* client has close the connection */
-    if (events & (EPOLLHUP | EPOLLRDHUP)) {
+    if (events & (POLLHUP | POLLRDHUP)) {
         tcp_connection_close(_connection, _buffer, _buffer_size);
         thread_remove_watchlist(worker, _connection->socket);
         free(_connection);
@@ -483,7 +472,7 @@ int worker_init(thread_t *worker) {
     worker->stop_handler = NULL;
     worker->context = _context;
 
-    if (thread_init(worker, _context->watchlist_buffer, main_config.max_connection) < 0) {
+    if (thread_init(worker) < 0) {
         return -1;
     }
     if (thread_run(worker) < 0) {
@@ -510,10 +499,10 @@ void worker_clean(thread_t *worker) {
 void signal_handler(int signum) {
     if (signum == SIGINT) {
         for (int i = 0; i < main_config.listener_count; i++) {
-            thread_stop(&listeners[i], signum);
+            thread_stop(listeners[i], signum);
         }
         for (int i = 0; i < main_config.worker_count; i++) {
-            thread_stop(&workers[i], signum);
+            thread_stop(workers[i], signum);
         }
     }
 }
@@ -531,16 +520,20 @@ int main(void) {
         return errno;
     }
 
-    workers = malloc(main_config.worker_count * sizeof(thread_t));
+    workers = malloc(main_config.worker_count * sizeof(thread_t *));
     for (int i = 0; i < main_config.worker_count; i++) {
-        if (worker_init(&workers[i]) < 0) {
+        if ((workers[i] = thread_new(main_config.max_connection)) == NULL) {
+            return errno;
+        }
+        if (worker_init(workers[i]) < 0) {
             return errno;
         }
     }
 
-    listeners = malloc(main_config.listener_count * sizeof(thread_t));
+    listeners = malloc(main_config.listener_count * sizeof(thread_t *));
     for (int i = 0; i < main_config.listener_count; i++) {
-        if (listener_init(&listeners[i], &main_config.servers[i]) < 0) {
+        listeners[i] = thread_new(0);
+        if (listener_init(listeners[i], &main_config.servers[i]) < 0) {
             return errno;
         }
     }
@@ -549,18 +542,20 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
 
     for (int i = 0; i < main_config.listener_count; i++) {
-        if (thread_wait(&listeners[i]) < 0) {
+        if (thread_wait(listeners[i]) < 0) {
             return errno;
         }
-        listener_clean(&listeners[i]);
+        listener_clean(listeners[i]);
+        free(listeners[i]);
     }
     free(listeners);
 
     for (int i = 0; i < main_config.worker_count; i++) {
-        if (thread_wait(&workers[i]) < 0) {
+        if (thread_wait(workers[i]) < 0) {
             return errno;
         }
-        worker_clean(&workers[i]);
+        worker_clean(workers[i]);
+        free(workers[i]);
     }
     free(workers);
 

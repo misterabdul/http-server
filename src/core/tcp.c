@@ -1,9 +1,9 @@
 #include "tcp.h"
 
+#include <contracts/tcp.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
-#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -157,7 +157,7 @@ ssize_t tcp_connection_send(tcp_connection_t *connection, char *buffer, size_t b
 int tcp_connection_sendfile(tcp_connection_t *connection, int file_fd, off_t file_size) {
     off_t _offset = 0;
     for (ssize_t _bytes_sent; _offset < file_size;) {
-        _bytes_sent = sendfile(connection->socket, file_fd, &_offset, (size_t)(file_size - _offset));
+        _bytes_sent = platform_sendfile(connection->socket, file_fd, &_offset, (size_t)(file_size - _offset));
         if (_bytes_sent == 0) {
             return 0;
         }
