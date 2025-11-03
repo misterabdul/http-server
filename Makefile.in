@@ -1,0 +1,55 @@
+CC = @CC@
+CFLAGS = @CFLAGS@
+LDFLAGS = @LDFLAGS@
+PLATFORM = @PLATFORM@
+PLATFORM_CODE = @PLATFORM_CODE@
+SPACER := 4
+
+SRCDIR = src/core
+LIBDIR = src/lib
+MSCDIR = src/misc
+PLTDIR = src/platform/${PLATFORM}
+BINDIR = bin
+OBJDIR = obj
+
+MAIN = http-server
+SRCS = $(wildcard ${SRCDIR}/*.c)
+LIBS = $(wildcard ${LIBDIR}/*.c)
+MSCS = $(wildcard ${MSCDIR}/*.c)
+PLTS = $(wildcard ${PLTDIR}/*.c)
+SRCOBJ = $(patsubst ${SRCDIR}/%.c,${OBJDIR}/core-%.o,${SRCS})
+LIBOBJ = $(patsubst ${LIBDIR}/%.c,${OBJDIR}/lib-%.o,${LIBS})
+MSCOBJ = $(patsubst ${MSCDIR}/%.c,${OBJDIR}/misc-%.o,${MSCS})
+PLTOBJ = $(patsubst ${PLTDIR}/%.c,${OBJDIR}/platform-${PLATFORM}-%.o,${PLTS})
+
+.PHONY: all clean
+
+all: main
+
+main: ${BINDIR}/${MAIN}
+
+clean:
+	@printf "  %-${SPACER}s %s\n" "RM" "${OBJDIR}/*"
+	@${RM} ${OBJDIR}/*
+	@printf "  %-${SPACER}s %s\n" "RM" "${BINDIR}/${MAIN}"
+	@${RM} ${BINDIR}/${MAIN}
+
+${BINDIR}/${MAIN}: ${SRCOBJ} ${LIBOBJ} ${MSCOBJ} ${PLTOBJ}
+	@printf "  %-${SPACER}s %s\n" "LD" "$@"
+	@${CC} -o $@ $^ ${LDFLAGS}
+
+${OBJDIR}/core-%.o: ${SRCDIR}/%.c
+	@printf "  %-${SPACER}s %s\n" "CC" "$<"
+	@${CC} -o $@ -c $< ${CFLAGS} -DPLATFORM=${PLATFORM_CODE}
+
+${OBJDIR}/lib-%.o: ${LIBDIR}/%.c
+	@printf "  %-${SPACER}s %s\n" "CC" "$<"
+	@${CC} -o $@ -c $< ${CFLAGS} -DPLATFORM=${PLATFORM_CODE}
+
+${OBJDIR}/misc-%.o: ${MSCDIR}/%.c
+	@printf "  %-${SPACER}s %s\n" "CC" "$<"
+	@${CC} -o $@ -c $< ${CFLAGS} -DPLATFORM=${PLATFORM_CODE}
+
+${OBJDIR}/platform-${PLATFORM}-%.o: ${PLTDIR}/%.c
+	@printf "  %-${SPACER}s %s\n" "CC" "$<"
+	@${CC} -o $@ -c $< ${CFLAGS} -DPLATFORM=${PLATFORM_CODE}

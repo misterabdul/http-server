@@ -1,0 +1,76 @@
+#!/bin/sh
+
+echo "Configuring..."
+
+# Default values
+DEFAULT_CC="cc"
+DEFAULT_PREFIX="/usr/local"
+DEFAULT_CFLAGS="-std=gnu99 -pedantic -Wall -Wextra -I./src -D_FILE_OFFSET_BITS=64 -D_REENTRANT"
+DEFAULT_LDFLAGS="-lpthread -lssl -lcrypto"
+DEFAULT_PLATFORM="unix"
+DEFAULT_PLATFORM_CODE="0x00"
+
+if [ -z "$CC" ]; then
+    CC="$DEFAULT_CC"
+fi
+if [ -z "$PREFIX" ]; then
+    PREFIX="$DEFAULT_PREFIX"
+fi
+if [ -z "$LDFLAGS" ]; then
+    LDFLAGS="$DEFAULT_LDFLAGS"
+else
+    LDFLAGS="$LDFLAGS $DEFAULT_LDFLAGS"
+fi
+if [ -z "$CFLAGS" ]; then
+    CFLAGS="$DEFAULT_CFLAGS"
+else
+    CFLAGS="$CFLAGS $DEFAULT_CFLAGS"
+fi
+
+UNAME_S=$(uname -s)
+case "$UNAME_S" in
+    Linux)
+        PLATFORM="linux"
+        PLATFORM_CODE="0x10"
+        ;;
+    FreeBSD)
+        PLATFORM="bsd"
+        PLATFORM_CODE="0x20"
+        ;;
+    OpenBSD)
+        PLATFORM="bsd"
+        PLATFORM_CODE="0x21"
+        ;;
+    NetBSD)
+        PLATFORM="bsd"
+        PLATFORM_CODE="0x22"
+        ;;
+    Darwin)
+        PLATFORM="darwin"
+        PLATFORM_CODE="0x30"
+        ;;
+    SunOS)
+        PLATFORM="solaris"
+        PLATFORM_CODE="0x40"
+        LDFLAGS="$LDFLAGS -lnsl -lsocket -lsendfile"
+        ;;
+    *)
+        PLATFORM="$DEFAULT_PLATFORM"
+        PLATFORM_CODE="$DEFAULT_PLATFORM_CODE"
+        ;;
+esac
+
+echo "Compiler: $CC"
+echo "Prefix:   $PREFIX"
+echo "Platform: $PLATFORM ($PLATFORM_CODE)"
+
+# The magic step: substitute placeholders in Makefile.in to create Makefile
+sed -e "s|@CC@|$CC|" \
+    -e "s|@PREFIX@|$PREFIX|" \
+    -e "s|@CFLAGS@|$CFLAGS|" \
+    -e "s|@LDFLAGS@|$LDFLAGS|" \
+    -e "s|@PLATFORM@|$PLATFORM|" \
+    -e "s|@PLATFORM_CODE@|$PLATFORM_CODE|" \
+    Makefile.in > Makefile
+
+echo "Configuration complete. You can now run 'make'."
