@@ -33,4 +33,4 @@ $ gmake
 | `--http-port`            | Set the http listen port.                      |      8080       |
 | `--https-port`           | Set the https listen port (if SSL enabled).    |      8443       |
 | `--ssl-certificate-path` | Set SSL certificate path (if SSL enabled).     | ./fullchain.pem |
-| `--ssl-private-key-path` | Set SSL certificate path (if SSL enabled).     |  ./privkey.pem  |
+| `--ssl-private-key-path` | Set SSL private key path (if SSL enabled).     |  ./privkey.pem  |
