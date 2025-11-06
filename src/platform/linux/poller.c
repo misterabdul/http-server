@@ -33,6 +33,11 @@ typedef struct data {
      * @brief The handler when the poller is about to stop.
      */
     poller_on_stop_t on_stop;
+
+    /**
+     * @brief Internal lock mutex.
+     */
+    pthread_mutex_t lock;
 } data_t;
 
 /**
@@ -102,11 +107,20 @@ int poller_setup(poller_t* poller) {
     int _ret = pthread_attr_init(&poller->attr);
     if (_ret != 0) {
         LOG_ERROR("pthread_attr_init: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
+        return -1;
+    }
+
+    /* Initialize the POSIX's thread mutex. */
+    data_t* _data = (data_t*)poller->data;
+    _ret = pthread_mutex_init(&_data->lock, NULL);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_mutex_init: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
         return -1;
     }
 
     /* Create Linux epoll. */
-    data_t* _data = (data_t*)poller->data;
     _data->epoll_fd = epoll_create1(0);
     if (_data->epoll_fd == -1) {
         LOG_ERROR("epoll_create1: %s (%d)\n", strerror(errno), errno);
@@ -126,16 +140,7 @@ int poller_run(poller_t* poller) {
     );
     if (_ret != 0) {
         LOG_ERROR("pthread_create: %s (%d)\n", strerror(_ret), _ret);
-        return -1;
-    }
-    _ret = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    if (_ret != 0) {
-        LOG_ERROR("pthread_setcancelstate: %s (%d)\n", strerror(_ret), _ret);
-        return -1;
-    }
-    _ret = pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
-    if (_ret != 0) {
-        LOG_ERROR("pthread_setcanceltype: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
         return -1;
     }
 
@@ -150,6 +155,7 @@ int poller_wait(poller_t* poller) {
     int _ret = pthread_join(poller->id, NULL);
     if (_ret != 0) {
         LOG_ERROR("pthread_join: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
         return -1;
     }
 
@@ -163,6 +169,7 @@ int poller_stop(poller_t* poller) {
     int _ret = pthread_cancel(poller->id);
     if (_ret != 0) {
         LOG_ERROR("pthread_cancel: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
         return -1;
     }
 
@@ -189,7 +196,10 @@ int poller_add(poller_t* poller, int fd, int code, void* context) {
         LOG_ERROR("epoll_ctl: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    pthread_mutex_lock(&_data->lock);
     poller->item_count++;
+    pthread_mutex_unlock(&_data->lock);
 
     return 0;
 }
@@ -224,7 +234,10 @@ int poller_remove(poller_t* poller, int fd, int code) {
         LOG_ERROR("epoll_ctl: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    pthread_mutex_lock(&_data->lock);
     poller->item_count--;
+    pthread_mutex_unlock(&_data->lock);
 
     return 0;
 }
@@ -243,10 +256,20 @@ void poller_cleanup(poller_t* poller) {
  * @copydoc thread_routine
  */
 static void* thread_routine(void* ptr) {
-    poller_t* _poller = (poller_t*)ptr;
-    data_t* _data = (data_t*)_poller->data;
+    int _ret = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_setcancelstate: %s (%d)\n", strerror(_ret), _ret);
+        return NULL;
+    }
+    _ret = pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_setcanceltype: %s (%d)\n", strerror(_ret), _ret);
+        return NULL;
+    }
 
     /* Just stop when the even handler is not set. */
+    poller_t* _poller = (poller_t*)ptr;
+    data_t* _data = (data_t*)_poller->data;
     if (_data->on_event == NULL) {
         if (close(_data->epoll_fd) == -1) {
             LOG_ERROR("close: %s (%d)\n", strerror(errno), errno);
@@ -317,7 +340,7 @@ static inline uint32_t code2event(int code) {
         _event |= EPOLLOUT;
     }
     if (code & POLL_CODE_ET) {
-        _event |= EPOLLET;
+        _event |= EPOLLET | EPOLLRDHUP;
     }
 
     return _event;

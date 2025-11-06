@@ -119,8 +119,6 @@ int worker_stop(worker_t* worker) {
  * @copydoc worker_assign
  */
 int worker_assign(worker_t* worker, job_t* job) {
-    /* Note: Implement mutex for the case of multiple listeners? */
-
 #if POLL_ENGINE == POLL_ENGINE_KQUEUE
     job->poll_code = POLL_CODE_READ;
 #endif

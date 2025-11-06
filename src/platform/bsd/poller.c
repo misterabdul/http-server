@@ -45,6 +45,11 @@ typedef struct data {
      * @brief The handler when the poller is about to stop.
      */
     poller_on_stop_t on_stop;
+
+    /**
+     * @brief Internal lock mutex.
+     */
+    pthread_mutex_t lock;
 } data_t;
 
 /**
@@ -128,8 +133,15 @@ int poller_setup(poller_t* poller) {
         return -1;
     }
 
-    /* Create BSD kqueue. */
+    /* Initialize the POSIX's thread mutex. */
     data_t* _data = (data_t*)poller->data;
+    _ret = pthread_mutex_init(&_data->lock, NULL);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_mutex_init: %s (%d)\n", strerror(_ret), _ret);
+        return -1;
+    }
+
+    /* Create BSD kqueue. */
     _data->kq = kqueue();
     if (_data->kq == -1) {
         LOG_ERROR("kqueue: %s (%d)\n", strerror(errno), errno);
@@ -225,7 +237,10 @@ int poller_add(poller_t* poller, int fd, int code, void* context) {
         LOG_ERROR("kevent: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    pthread_mutex_lock(&_data->lock);
     poller->item_count += _item_count;
+    pthread_mutex_unlock(&_data->lock);
 
     return 0;
 }
@@ -308,7 +323,10 @@ int poller_remove(poller_t* poller, int fd, int code) {
         LOG_ERROR("kevent: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    pthread_mutex_lock(&_data->lock);
     poller->item_count -= _item_count;
+    pthread_mutex_unlock(&_data->lock);
 
     return 0;
 }

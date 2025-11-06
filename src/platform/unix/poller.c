@@ -142,12 +142,15 @@ int poller_setup(poller_t* poller) {
         return -1;
     }
 
+    /* Initialize the POSIX's thread mutex. */
     data_t* _data = (data_t*)poller->data;
     _ret = pthread_mutex_init(&_data->lock, NULL);
     if (_ret != 0) {
         LOG_ERROR("pthread_mutex_init: %s (%d)\n", strerror(_ret), _ret);
         return -1;
     }
+
+    /* Setup related instances. */
     if (map_setup(&_data->fd_map) == -1) {
         return -1;
     }

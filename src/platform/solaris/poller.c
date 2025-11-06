@@ -34,6 +34,11 @@ typedef struct data {
      * @brief The handler when the poller is about to stop.
      */
     poller_on_stop_t on_stop;
+
+    /**
+     * @brief Internal lock mutex.
+     */
+    pthread_mutex_t lock;
 } data_t;
 
 /**
@@ -106,8 +111,15 @@ int poller_setup(poller_t* poller) {
         return -1;
     }
 
-    /* Create Solaris event ports. */
+    /* Initialize the POSIX's thread mutex. */
     data_t* _data = (data_t*)poller->data;
+    _ret = pthread_mutex_init(&_data->lock, NULL);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_mutex_init: %s (%d)\n", strerror(_ret), _ret);
+        return -1;
+    }
+
+    /* Create Solaris event ports. */
     _data->port_fd = port_create();
     if (_data->port_fd == -1) {
         LOG_ERROR("port_create: %s (%d)\n", strerror(errno), errno);
@@ -127,6 +139,7 @@ int poller_run(poller_t* poller) {
     );
     if (_ret != 0) {
         LOG_ERROR("pthread_create: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
         return -1;
     }
 
@@ -179,7 +192,10 @@ int poller_add(poller_t* poller, int fd, int code, void* context) {
         LOG_ERROR("port_associate: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    pthread_mutex_lock(&_data->lock);
     poller->item_count++;
+    pthread_mutex_unlock(&_data->lock);
 
     return 0;
 }
@@ -218,7 +234,10 @@ int poller_remove(poller_t* poller, int fd, int code) {
         LOG_ERROR("port_dissociate: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    pthread_mutex_lock(&_data->lock);
     poller->item_count--;
+    pthread_mutex_unlock(&_data->lock);
 
     return 0;
 }
@@ -259,7 +278,7 @@ static void* thread_routine(void* ptr) {
     for (uint_t _count, _code, _i, _run = 1; _run;) {
         pthread_testcancel();
 
-        _count = _poller->item_count ? _poller->item_count : 1;
+        _count = _poller->item_count > 0 ? _poller->item_count : 1;
         _ret = port_getn(
             _data->port_fd, _data->items, _poller->item_size, &_count, &_timeout
         );
@@ -273,12 +292,17 @@ static void* thread_routine(void* ptr) {
             break;
         }
 
+        /**
+         * Solaris is automatically remove any file descriptor event association
+         * after an event is received.
+         */
+        if (_count > 0) {
+            pthread_mutex_lock(&_data->lock);
+            _poller->item_count -= _count;
+            pthread_mutex_unlock(&_data->lock);
+        }
+
         for (_i = 0; _i < _count; _i++) {
-            /**
-             * Solaris is automatically remove any file descriptor event
-             * association after an event is received.
-             */
-            _poller->item_count--;
             if (_data->on_event) {
                 _code = event2code(_data->items[_i].portev_events);
                 _data->on_event(_poller, _code, _data->items[_i].portev_user);
