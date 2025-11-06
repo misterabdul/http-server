@@ -112,4 +112,15 @@ int message_resolve_path(
     message_t* message, const char* root, size_t length, char* path, size_t size
 );
 
+/**
+ * @brief Resolve the minor version of valid HTTP/1.X version from the message.
+ *
+ * Assume the minor version 0 on invalid version or any error while parsing.
+ *
+ * @param[in] message The HTTP message instance.
+ *
+ * @return The minor version integer, any error will return 0.
+ */
+int message_resolve_version_minor(message_t* message);
+
 #endif

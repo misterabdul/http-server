@@ -29,6 +29,11 @@ typedef struct response {
     response_type_t type;
 
     /**
+     * @brief The minor version for the HTTP version.
+     */
+    int minor_version;
+
+    /**
      * @brief The string buffer for the HTTP head.
      */
     char head_buffer[HEAD_BUFFER_SIZE];

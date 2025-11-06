@@ -126,15 +126,16 @@ void http_init(http_t* http, const char* root, size_t length) {
         .root_dir_length = length,
         .should_close = 0,
         .root_dir = root,
-    };
 
-    http->request = (message_t){0};
-    http->response = (response_t){
-        .type = RESPONSE_TYPE_STRING,
-        .head_length = 0,
-        .body_length = 0,
-        .file_fd = -1,
-        .file_stat = (struct stat){0},
+        .request = (message_t){0},
+        .response = (response_t){
+            .file_stat = (struct stat){0},
+            .type = RESPONSE_TYPE_STRING,
+            .minor_version = 0,
+            .head_length = 0,
+            .body_length = 0,
+            .file_fd = -1,
+        },
     };
 }
 
@@ -210,6 +211,8 @@ static inline void process_request(http_t* http) {
     message_t* _req = &http->request;
     char _path[PATH_BUFFER_SIZE];
 
+    _res->minor_version = message_resolve_version_minor(_req);
+
     /* Get valid request's file path. */
     int _ret = message_resolve_path(
         _req, http->root_dir, http->root_dir_length, _path, PATH_BUFFER_SIZE
@@ -260,7 +263,7 @@ static inline void build_head_file(response_t* response, char* path) {
     int _ret = snprintf(
         response->head_buffer,
         HEAD_BUFFER_SIZE,
-        "HTTP/1.1 200 OK\r\n"
+        "HTTP/1.%d 200 OK\r\n"
         "Accept-Ranges: none\r\n"
         "Cache-Control: public, max-age=86400\r\n"
         "Connection: keep-alive\r\n"
@@ -269,6 +272,7 @@ static inline void build_head_file(response_t* response, char* path) {
         "Date: %s\r\n"
         "Last-Modified: %s\r\n"
         "Server: %s\r\n\r\n",
+        response->minor_version,
         (long long)response->file_stat.st_size,
         _mime,
         _date,
@@ -293,13 +297,14 @@ static inline void build_head_options(response_t* response) {
     int _ret = snprintf(
         response->head_buffer,
         HEAD_BUFFER_SIZE,
-        "HTTP/1.1 204 NO CONTENT\r\n"
+        "HTTP/1.%d 204 NO CONTENT\r\n"
         "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"
         "Allow: GET, HEAD, OPTIONS\r\n"
         "Connection: keep-alive\r\n"
         "Content-Length: 0\r\n"
         "Date: %s\r\n"
         "Server: %s\r\n\r\n",
+        response->minor_version,
         _date,
         g_server_name
     );
@@ -321,13 +326,14 @@ static inline void build_head_error(response_t* response, status_t status) {
             _ret = snprintf(
                 response->head_buffer,
                 HEAD_BUFFER_SIZE,
-                "HTTP/1.1 500 INTERNAL SERVER ERROR\r\n"
+                "HTTP/1.%d 500 INTERNAL SERVER ERROR\r\n"
                 "Cache-Control: no-store, private\r\n"
                 "Connection: close\r\n"
                 "Content-Length: %lu\r\n"
                 "Content-Type: text/html; charset=UTF-8\r\n"
                 "Date: %s\r\n"
                 "Server: %s\r\n\r\n",
+                response->minor_version,
                 strlen(g_html_500),
                 _date,
                 g_server_name
@@ -337,13 +343,14 @@ static inline void build_head_error(response_t* response, status_t status) {
             _ret = snprintf(
                 response->head_buffer,
                 HEAD_BUFFER_SIZE,
-                "HTTP/1.1 400 BAD REQUEST\r\n"
+                "HTTP/1.%d 400 BAD REQUEST\r\n"
                 "Cache-Control: no-store, private\r\n"
                 "Connection: close\r\n"
                 "Content-Length: %lu\r\n"
                 "Content-Type: text/html; charset=UTF-8\r\n"
                 "Date: %s\r\n"
                 "Server: %s\r\n\r\n",
+                response->minor_version,
                 strlen(g_html_400),
                 _date,
                 g_server_name
@@ -353,13 +360,14 @@ static inline void build_head_error(response_t* response, status_t status) {
             _ret = snprintf(
                 response->head_buffer,
                 HEAD_BUFFER_SIZE,
-                "HTTP/1.1 404 NOT FOUND\r\n"
+                "HTTP/1.%d 404 NOT FOUND\r\n"
                 "Cache-Control: no-store, private\r\n"
                 "Connection: keep-alive\r\n"
                 "Content-Length: %lu\r\n"
                 "Content-Type: text/html; charset=UTF-8\r\n"
                 "Date: %s\r\n"
                 "Server: %s\r\n\r\n",
+                response->minor_version,
                 strlen(g_html_404),
                 _date,
                 g_server_name
@@ -369,13 +377,14 @@ static inline void build_head_error(response_t* response, status_t status) {
             _ret = snprintf(
                 response->head_buffer,
                 HEAD_BUFFER_SIZE,
-                "HTTP/1.1 405 METHOD NOT ALLOWED\r\n"
+                "HTTP/1.%d 405 METHOD NOT ALLOWED\r\n"
                 "Cache-Control: no-store, private\r\n"
                 "Connection: keep-alive\r\n"
                 "Content-Length: %lu\r\n"
                 "Content-Type: text/html; charset=UTF-8\r\n"
                 "Date: %s\r\n"
                 "Server: %s\r\n\r\n",
+                response->minor_version,
                 strlen(g_html_405),
                 _date,
                 g_server_name

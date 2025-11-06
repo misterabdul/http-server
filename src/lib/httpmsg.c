@@ -214,6 +214,22 @@ int message_resolve_path(
 }
 
 /**
+ * @copydoc message_resolve_version_minor
+ */
+int message_resolve_version_minor(message_t* message) {
+    const char* _prefix = "HTTP/1.";
+
+    if (message->version_length < 8) {
+        return 0;
+    }
+    if (strncmp(message->version, _prefix, 7) != 0) {
+        return 0;
+    }
+
+    return message->version[7] == '1' ? 1 : 0;
+}
+
+/**
  * @copydoc match
  */
 static inline bool match(char c, char* arr, size_t count) {
@@ -279,7 +295,9 @@ static inline bool check_path(
     /* Resolve the absolute path. */
     char _resolved[REAL_PATH_BUFFER_SIZE];
     if (realpath(path, _resolved) == NULL) {
-        LOG_ERROR("realpath: %s (%d)\n", strerror(errno), errno);
+        if (errno != ENOENT) {
+            LOG_ERROR("realpath: %s (%d)\n", strerror(errno), errno);
+        }
         return false;
     }
 
