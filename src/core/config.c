@@ -284,11 +284,13 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                 break;
             case 'h':
                 display_help();
+                errno = EINVAL;
                 return -1;
 
             case LONGOPT_WORKER_CNT:
                 if (int_parse(optarg, &_parsed) == -1) {
                     fprintf(stderr, "Invalid number of workers: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 opts->worker_cnt = _parsed;
@@ -297,6 +299,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
             case LONGOPT_MAX_CONN:
                 if (int_parse(optarg, &_parsed) == -1) {
                     fprintf(stderr, "Invalid max connections: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 opts->max_conn = _parsed;
@@ -305,6 +308,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
             case LONGOPT_BUFF_SIZE:
                 if (int_parse(optarg, &_parsed) == -1) {
                     fprintf(stderr, "Invalid buffer size: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 opts->buff_size = (size_t)_parsed;
@@ -314,6 +318,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                 _ret = snprintf(opts->addr4, CONFIG_ADDRESS_SIZE, "%s", optarg);
                 if (_ret < 0) {
                     fprintf(stderr, "Invalid IPv4 address: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 break;
@@ -322,6 +327,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                 _ret = snprintf(opts->addr6, CONFIG_ADDRESS_SIZE, "%s", optarg);
                 if (_ret < 0) {
                     fprintf(stderr, "Invalid IPv6 address: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 break;
@@ -337,6 +343,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
             case LONGOPT_PORT_HTTP:
                 if (int_parse(optarg, &_parsed) == -1) {
                     fprintf(stderr, "Invalid HTTP port: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 opts->port_http = _parsed;
@@ -344,6 +351,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
             case LONGOPT_PORT_HTTPS:
                 if (int_parse(optarg, &_parsed) == -1) {
                     fprintf(stderr, "Invalid HTTPS port: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 opts->port_https = _parsed;
@@ -353,6 +361,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                 _ret = snprintf(opts->root, CONFIG_PATH_SIZE, "%s", optarg);
                 if (_ret < 0) {
                     fprintf(stderr, "Invalid root path: %s\n", optarg);
+                    errno = EINVAL;
                     return -1;
                 }
                 break;
@@ -363,6 +372,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                     fprintf(
                         stderr, "Invalid SSL certificate path: %s\n", optarg
                     );
+                    errno = EINVAL;
                     return -1;
                 }
                 break;
@@ -373,6 +383,7 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                     fprintf(
                         stderr, "Invalid SSL private key path: %s\n", optarg
                     );
+                    errno = EINVAL;
                     return -1;
                 }
                 break;

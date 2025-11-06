@@ -38,6 +38,7 @@ int objpool_setup(objpool_t* objpool) {
     int _ret = pthread_mutex_init(&objpool->lock, NULL);
     if (_ret != 0) {
         LOG_ERROR("pthread_mutex_init: %s (%d)\n", strerror(_ret), _ret);
+        errno = _ret;
         return -1;
     }
 
