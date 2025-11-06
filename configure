@@ -60,7 +60,7 @@ case "$UNAME_S" in
         ;;
 esac
 
-echo "Compiler: $CC"
+echo "Compiler: $($CC --version | head -n1)"
 echo "Prefix:   $PREFIX"
 echo "Platform: $PLATFORM ($PLATFORM_CODE)"
 
@@ -73,4 +73,4 @@ sed -e "s|@CC@|$CC|" \
     -e "s|@PLATFORM_CODE@|$PLATFORM_CODE|" \
     Makefile.in > Makefile
 
-echo "Configuration complete. You can now run 'make'."
+echo "Configuration complete. You can now run 'gmake'."
