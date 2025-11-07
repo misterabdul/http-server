@@ -154,11 +154,11 @@ int listener_setup(listener_t* listener) {
         return -1;
     }
 
-    /* Enable SSL if needed. */
+    /* Enable TLS if needed. */
     data_t* _data = (data_t*)listener->data;
     listener_config_t* _config = _data->config;
     if (_config->secure) {
-        int _ret = server_enable_ssl(
+        int _ret = server_enable_tls(
             _server, _config->certificate, _config->private_key
         );
         if (_ret == -1) {

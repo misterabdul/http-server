@@ -21,12 +21,12 @@
  */
 typedef struct thread_data {
     /**
-     * @brief Global SSL error string buffer.
+     * @brief Global TLS error string buffer.
      */
     char buf[BUFFER_SIZE];
 
     /**
-     * @brief Global SSL error code.
+     * @brief Global TLS error code.
      */
     unsigned long err;
 
@@ -98,7 +98,7 @@ static inline int buff_sendfile(
 );
 
 /**
- * @brief Do the SSL sendfile via kernel TLS offload.
+ * @brief Do the TLS sendfile via kernel TLS offload.
  *
  * @param[in]  connection The transport connection instance.
  * @param[in]  file_fd    The file descriptor.
@@ -112,7 +112,7 @@ static inline int ktls_sendfile(
 );
 
 /**
- * @brief Do the SSL sendfile with user space buffer.
+ * @brief Do the TLS sendfile with user space buffer.
  *
  * @param[in]  connection  The transport connection instance.
  * @param[in]  file_fd     The file to be sent.
@@ -123,7 +123,7 @@ static inline int ktls_sendfile(
  *
  * @return Size of the sent data or -1 for errors.
  */
-static inline int bssl_sendfile(
+static inline int btls_sendfile(
     connection_t* connection,
     int file_fd,
     off_t file_size,
@@ -177,11 +177,11 @@ void server_init(
     *server = (server_t){
         .address = (struct sockaddr_storage){0},
         .max_connection = max_connection,
+        .ssl_context = NULL,
         .certificate = NULL,
         .private_key = NULL,
         .address_size = 0,
         .socket = -1,
-        .ssl = NULL,
     };
 
     /* IPv4 or IPv6 configuration. */
@@ -265,16 +265,16 @@ int server_setup(server_t* server) {
 }
 
 /**
- * @copydoc server_enable_ssl
+ * @copydoc server_enable_tls
  */
-int server_enable_ssl(
+int server_enable_tls(
     server_t* server, const char* certificate, const char* private_key
 ) {
     thread_data_t* _td = thread_data_get();
 
     /* Create a new SSL context for the server. */
-    server->ssl = SSL_CTX_new(TLS_server_method());
-    if (server->ssl == NULL) {
+    server->ssl_context = SSL_CTX_new(TLS_server_method());
+    if (server->ssl_context == NULL) {
         _td->err = ERR_get_error();
         ERR_error_string(_td->err, _td->buf);
         LOG_ERROR("SSL_CTX_new: %s\n", _td->buf);
@@ -282,12 +282,12 @@ int server_enable_ssl(
     }
 
     /* Minimum TLS version 1.2 */
-    SSL_CTX_set_min_proto_version(server->ssl, TLS1_2_VERSION);
+    SSL_CTX_set_min_proto_version(server->ssl_context, TLS1_2_VERSION);
 
     /* Assign the certificate file. */
     server->certificate = certificate;
     int _ret = SSL_CTX_use_certificate_file(
-        server->ssl, server->certificate, SSL_FILETYPE_PEM
+        server->ssl_context, server->certificate, SSL_FILETYPE_PEM
     );
     if (_ret != 1) {
         _td->err = ERR_get_error();
@@ -299,7 +299,7 @@ int server_enable_ssl(
     /* Assign the private key file. */
     server->private_key = private_key;
     _ret = SSL_CTX_use_PrivateKey_file(
-        server->ssl, server->private_key, SSL_FILETYPE_PEM
+        server->ssl_context, server->private_key, SSL_FILETYPE_PEM
     );
     if (_ret != 1) {
         _td->err = ERR_get_error();
@@ -309,7 +309,7 @@ int server_enable_ssl(
     }
 
     /* Validate the private key file with the assigned certificate file. */
-    _ret = SSL_CTX_check_private_key(server->ssl);
+    _ret = SSL_CTX_check_private_key(server->ssl_context);
     if (_ret != 1) {
         _td->err = ERR_get_error();
         ERR_error_string(_td->err, _td->buf);
@@ -327,7 +327,7 @@ int server_enable_ssl(
 
 #endif
 
-    SSL_CTX_set_options(server->ssl, _opt);
+    SSL_CTX_set_options(server->ssl_context, _opt);
 
     return 0;
 }
@@ -370,8 +370,9 @@ void server_close(server_t* server) {
  * @copydoc server_cleanup
  */
 void server_cleanup(server_t* server) {
-    if (server->ssl) {
-        SSL_CTX_free(server->ssl);
+    /* Cleanup OpenSSL data. */
+    if (server->ssl_context) {
+        SSL_CTX_free(server->ssl_context);
     }
 }
 
@@ -381,7 +382,7 @@ void server_cleanup(server_t* server) {
 void connection_init(connection_t* connection, server_t* server) {
     *connection = (connection_t){
         .address = (struct sockaddr_storage){0},
-        .ssl_established = false,
+        .tls_established = false,
         .address_size = 0,
         .server = server,
         .socket = -1,
@@ -480,11 +481,11 @@ int connection_setup(
         return -1;
     }
 
-    if (connection->server->ssl) {
+    if (connection->server->ssl_context) {
         thread_data_t* _td = thread_data_get();
 
         /* Create a new SSL instance from the server's SSL context. */
-        connection->ssl = SSL_new(connection->server->ssl);
+        connection->ssl = SSL_new(connection->server->ssl_context);
         if (connection->ssl == NULL) {
             _td->err = ERR_get_error();
             ERR_error_string(_td->err, _td->buf);
@@ -512,9 +513,9 @@ int connection_setup(
 }
 
 /**
- * @copydoc connection_establish_ssl
+ * @copydoc connection_establish_tls
  */
-int connection_establish_ssl(connection_t* connection) {
+int connection_establish_tls(connection_t* connection) {
     if (connection->ssl == NULL) {
         return 0;
     }
@@ -522,7 +523,7 @@ int connection_establish_ssl(connection_t* connection) {
     /* Accept the SSL handshake. */
     int _ret = SSL_accept(connection->ssl);
     if (_ret == 1) {
-        connection->ssl_established = true;
+        connection->tls_established = true;
         return 0;
     }
 
@@ -676,6 +677,7 @@ int connection_sendfile(
     off_t* sent
 ) {
     thread_data_t* _td = thread_data_get();
+
     int _ret;
 
     if (connection->ssl) {
@@ -692,7 +694,7 @@ int connection_sendfile(
         }
 
         /* Fallback to buffered sendfile. */
-        _ret = bssl_sendfile(
+        _ret = btls_sendfile(
             connection, file_fd, file_size, buffer, buffer_size, sent
         );
     } else {
@@ -721,8 +723,8 @@ int connection_sendfile(
  * @copydoc connection_close
  */
 void connection_close(connection_t* connection, char* buffer, size_t size) {
-    /* Close the established SSL connection. */
-    if (connection->ssl && connection->ssl_established) {
+    /* Close the established TLS connection. */
+    if (connection->ssl && connection->tls_established) {
         thread_data_t* _td = thread_data_get();
         int _ret = SSL_shutdown(connection->ssl);
         if (_ret < 0) {
@@ -768,7 +770,7 @@ void connection_close(connection_t* connection, char* buffer, size_t size) {
  * @copydoc connection_cleanup
  */
 void connection_cleanup(connection_t* connection) {
-    /* Cleanup SSL data. */
+    /* Cleanup OpenSSL data. */
     if (connection->ssl) {
         SSL_free(connection->ssl);
     }
@@ -894,9 +896,9 @@ static inline int ktls_sendfile(
 }
 
 /**
- * @copydoc bssl_sendfile
+ * @copydoc btls_sendfile
  */
-static inline int bssl_sendfile(
+static inline int btls_sendfile(
     connection_t* connection,
     int file_fd,
     off_t file_size,

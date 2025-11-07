@@ -28,9 +28,9 @@ $ gmake
 | `--root-path`            | Set the root directory.                        |      ./www      |
 | `--ip4-address`          | Set the IPv4 listen address.                   |     0.0.0.0     |
 | `--ip6-address`          | Set the IPv6 listen address (if IPv6 enabled). |       ::        |
-| `--ip6-enabled`          | Enable the IPv6 address mode.                  |      false      |
-| `--ssl-enabled`          | Enable the SSL mode.                           |      false      |
+| `--ip6-enable`           | Enable the IPv6 address mode.                  |      false      |
+| `--tls-enable`           | Enable the TLS mode.                           |      false      |
 | `--http-port`            | Set the http listen port.                      |      8080       |
-| `--https-port`           | Set the https listen port (if SSL enabled).    |      8443       |
-| `--ssl-certificate-path` | Set SSL certificate path (if SSL enabled).     | ./fullchain.pem |
-| `--ssl-private-key-path` | Set SSL private key path (if SSL enabled).     |  ./privkey.pem  |
+| `--https-port`           | Set the https listen port (if TLS enabled).    |      8443       |
+| `--tls-certificate-path` | Set TLS certificate path (if TLS enabled).     | ./fullchain.pem |
+| `--tls-private-key-path` | Set TLS private key path (if TLS enabled).     |  ./privkey.pem  |

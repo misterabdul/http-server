@@ -112,15 +112,15 @@ int job_handle_issue(job_t* job) {
 int job_read(job_t* job, char* buffer, size_t size) {
     bool _err_empty_recv = true;
 
-    /* Establish the SSL connection if not established yet. */
-    if (job->connection.ssl && !job->connection.ssl_established) {
-        if (connection_establish_ssl(&job->connection) == -1) {
+    /* Establish the TLS connection if not established yet. */
+    if (job->connection.ssl && !job->connection.tls_established) {
+        if (connection_establish_tls(&job->connection) == -1) {
             return -1;
         }
-        if (!job->connection.ssl_established) {
+        if (!job->connection.tls_established) {
             return 0;
         }
-        /* Supress the error on empty receive just after the ssl established. */
+        /* Supress the error on empty receive just after the TLS established. */
         _err_empty_recv = false;
     }
 

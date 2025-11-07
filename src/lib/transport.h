@@ -25,17 +25,17 @@ typedef struct server {
     socklen_t address_size;
 
     /**
-     * @brief SSL related data. Just let the library handle this.
+     * @brief TLS related data. Just let the library handle this.
      */
-    struct ssl_ctx_st* ssl;
+    struct ssl_ctx_st* ssl_context;
 
     /**
-     * @brief The SSL certificate file path.
+     * @brief The TLS certificate file path.
      */
     const char* certificate;
 
     /**
-     * @brief The SSL private key file path.
+     * @brief The TLS private key file path.
      */
     const char* private_key;
 
@@ -70,9 +70,9 @@ typedef struct connection {
     struct ssl_st* ssl;
 
     /**
-     * @brief Whether the SSL connection successfully established or not.
+     * @brief Whether the TLS connection successfully established or not.
      */
-    bool ssl_established;
+    bool tls_established;
 
     /**
      * @brief The transport server instance from which the connection accepted.
@@ -121,15 +121,15 @@ void server_init(
 int server_setup(server_t* server);
 
 /**
- * @brief Enable SSL for the transport server, set the TLS related stuff.
+ * @brief Enable TLS for the transport server, set the TLS related stuff.
  *
  * @param[out] server      The transport server instance.
- * @param[in]  certificate The SSL certificate file path.
- * @param[in]  private_key The SSL private key file path.
+ * @param[in]  certificate The TLS certificate file path.
+ * @param[in]  private_key The TLS private key file path.
  *
  * @return Result code, 0 for success or -1 for errors.
  */
-int server_enable_ssl(
+int server_enable_tls(
     server_t* server, const char* certificate, const char* private_key
 );
 
@@ -188,16 +188,16 @@ int connection_setup(
 );
 
 /**
- * @brief Establish SSL connection.
+ * @brief Establish TLS connection.
  *
- * This has no effect on tranport connection coming from non-SSL enabled
+ * This has no effect on tranport connection coming from non-TLS enabled
  * transport server.
  *
  * @param[out] connection The transport connection instance.
  *
  * @return Result code, 0 for success or -1 for errors.
  */
-int connection_establish_ssl(connection_t* connection);
+int connection_establish_tls(connection_t* connection);
 
 /**
  * @brief Get the error code from the transport connection.

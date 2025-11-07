@@ -16,12 +16,12 @@
 #define DEFAULT_ADDR4      "0.0.0.0"
 #define DEFAULT_ADDR6      "::"
 #define DEFAULT_IP6_ENABLE false
-#define DEFAULT_SSL_ENABLE false
+#define DEFAULT_TLS_ENABLE false
 #define DEFAULT_PORT_HTTP  8080
 #define DEFAULT_PORT_HTTPS 8443
 #define DEFAULT_ROOT       "www"
-#define DEFAULT_SSL_CERT   "fullchain.pem"
-#define DEFAULT_SSL_PKEY   "privkey.pem"
+#define DEFAULT_TLS_CERT   "fullchain.pem"
+#define DEFAULT_TLS_PKEY   "privkey.pem"
 
 /**
  * @brief Code used to represent the short code of long command line argument.
@@ -33,12 +33,12 @@ typedef enum longopt {
     LONGOPT_ADDR4 = 0x103,
     LONGOPT_ADDR6 = 0x104,
     LONGOPT_IP6_ENABLE = 0x105,
-    LONGOPT_SSL_ENABLE = 0x106,
+    LONGOPT_TLS_ENABLE = 0x106,
     LONGOPT_PORT_HTTP = 0x107,
     LONGOPT_PORT_HTTPS = 0x108,
     LONGOPT_ROOT = 0x109,
-    LONGOPT_SSL_CERT = 0x10A,
-    LONGOPT_SSL_PKEY = 0x10B,
+    LONGOPT_TLS_CERT = 0x10A,
+    LONGOPT_TLS_PKEY = 0x10B,
 } longopt_t;
 
 /**
@@ -51,12 +51,12 @@ typedef struct opts {
     char addr4[CONFIG_ADDRESS_SIZE];
     char addr6[CONFIG_ADDRESS_SIZE];
     bool ip6_enable;
-    bool ssl_enable;
+    bool tls_enable;
     int port_http;
     int port_https;
     char root[CONFIG_PATH_SIZE];
-    char ssl_cert[CONFIG_PATH_SIZE];
-    char ssl_pkey[CONFIG_PATH_SIZE];
+    char tls_cert[CONFIG_PATH_SIZE];
+    char tls_pkey[CONFIG_PATH_SIZE];
 } opts_t;
 
 /**
@@ -161,7 +161,7 @@ int config_get(config_t* config, int argc, char* argv[]) {
         }
     }
 
-    if (!_opts.ssl_enable) {
+    if (!_opts.tls_enable) {
         return 0;
     } else {
         config->listener_count++;
@@ -185,14 +185,14 @@ int config_get(config_t* config, int argc, char* argv[]) {
         _https_lt->root_length = _ret;
     }
     _ret = snprintf(
-        _https_lt->certificate, CONFIG_PATH_SIZE, "%s", _opts.ssl_cert
+        _https_lt->certificate, CONFIG_PATH_SIZE, "%s", _opts.tls_cert
     );
     if (_ret < 0) {
         LOG_ERROR("snprintf: %s (%d)\n", strerror(errno), errno);
         return -1;
     }
     _ret = snprintf(
-        _https_lt->private_key, CONFIG_PATH_SIZE, "%s", _opts.ssl_pkey
+        _https_lt->private_key, CONFIG_PATH_SIZE, "%s", _opts.tls_pkey
     );
     if (_ret < 0) {
         LOG_ERROR("snprintf: %s (%d)\n", strerror(errno), errno);
@@ -239,7 +239,7 @@ static inline void opts_default(opts_t* opts) {
         .max_conn = DEFAULT_MAX_CONN,
         .buff_size = DEFAULT_BUFF_SIZE,
         .ip6_enable = DEFAULT_IP6_ENABLE,
-        .ssl_enable = DEFAULT_SSL_ENABLE,
+        .tls_enable = DEFAULT_TLS_ENABLE,
         .port_http = DEFAULT_PORT_HTTP,
         .port_https = DEFAULT_PORT_HTTPS,
     };
@@ -248,8 +248,8 @@ static inline void opts_default(opts_t* opts) {
     strncpy(opts->addr4, DEFAULT_ADDR4, CONFIG_ADDRESS_SIZE);
     strncpy(opts->addr6, DEFAULT_ADDR6, CONFIG_ADDRESS_SIZE);
     strncpy(opts->root, DEFAULT_ROOT, CONFIG_PATH_SIZE);
-    strncpy(opts->ssl_cert, DEFAULT_SSL_CERT, CONFIG_PATH_SIZE);
-    strncpy(opts->ssl_pkey, DEFAULT_SSL_PKEY, CONFIG_PATH_SIZE);
+    strncpy(opts->tls_cert, DEFAULT_TLS_CERT, CONFIG_PATH_SIZE);
+    strncpy(opts->tls_pkey, DEFAULT_TLS_PKEY, CONFIG_PATH_SIZE);
 }
 
 /**
@@ -266,12 +266,12 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
         {"ip4-address", required_argument, NULL, LONGOPT_ADDR4},
         {"ip6-address", required_argument, NULL, LONGOPT_ADDR6},
         {"ip6-enable", no_argument, NULL, LONGOPT_IP6_ENABLE},
-        {"ssl-enable", no_argument, NULL, LONGOPT_SSL_ENABLE},
+        {"tls-enable", no_argument, NULL, LONGOPT_TLS_ENABLE},
         {"http-port", required_argument, NULL, LONGOPT_PORT_HTTP},
         {"https-port", required_argument, NULL, LONGOPT_PORT_HTTPS},
         {"root-path", required_argument, NULL, LONGOPT_ROOT},
-        {"ssl-certificate-path", required_argument, NULL, LONGOPT_SSL_CERT},
-        {"ssl-private-key-path", required_argument, NULL, LONGOPT_SSL_PKEY},
+        {"tls-certificate-path", required_argument, NULL, LONGOPT_TLS_CERT},
+        {"tls-private-key-path", required_argument, NULL, LONGOPT_TLS_PKEY},
         {0},
     };
 
@@ -336,8 +336,8 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                 opts->ip6_enable = true;
                 break;
 
-            case LONGOPT_SSL_ENABLE:
-                opts->ssl_enable = true;
+            case LONGOPT_TLS_ENABLE:
+                opts->tls_enable = true;
                 break;
 
             case LONGOPT_PORT_HTTP:
@@ -366,22 +366,22 @@ static inline int opts_parse(opts_t* opts, int argc, char* argv[]) {
                 }
                 break;
 
-            case LONGOPT_SSL_CERT:
-                _ret = snprintf(opts->ssl_cert, CONFIG_PATH_SIZE, "%s", optarg);
+            case LONGOPT_TLS_CERT:
+                _ret = snprintf(opts->tls_cert, CONFIG_PATH_SIZE, "%s", optarg);
                 if (_ret < 0) {
                     fprintf(
-                        stderr, "Invalid SSL certificate path: %s\n", optarg
+                        stderr, "Invalid TLS certificate path: %s\n", optarg
                     );
                     errno = EINVAL;
                     return -1;
                 }
                 break;
 
-            case LONGOPT_SSL_PKEY:
-                _ret = snprintf(opts->ssl_pkey, CONFIG_PATH_SIZE, "%s", optarg);
+            case LONGOPT_TLS_PKEY:
+                _ret = snprintf(opts->tls_pkey, CONFIG_PATH_SIZE, "%s", optarg);
                 if (_ret < 0) {
                     fprintf(
-                        stderr, "Invalid SSL private key path: %s\n", optarg
+                        stderr, "Invalid TLS private key path: %s\n", optarg
                     );
                     errno = EINVAL;
                     return -1;
@@ -439,6 +439,12 @@ static inline void display_help(void) {
     );
     fprintf(
         _output,
+        "  --root-path             "
+        "Set the root path directory, default: \"%s\"\n",
+        DEFAULT_ROOT
+    );
+    fprintf(
+        _output,
         "  --ip4-address           "
         "Set the IPv4 address, default: \"%s\"\n",
         DEFAULT_ADDR4
@@ -456,6 +462,11 @@ static inline void display_help(void) {
     );
     fprintf(
         _output,
+        "  --tls-enable            "
+        "Enable the TLS mode, default: disabled\n"
+    );
+    fprintf(
+        _output,
         "  --http-port             "
         "Set the HTTP port, default: %d\n",
         DEFAULT_PORT_HTTP
@@ -468,20 +479,14 @@ static inline void display_help(void) {
     );
     fprintf(
         _output,
-        "  --root-path             "
-        "Set the root path directory, default: \"%s\"\n",
-        DEFAULT_ROOT
+        "  --tls-certificate-path  "
+        "Set the TLS certificate file path, default: \"%s\"\n",
+        DEFAULT_TLS_CERT
     );
     fprintf(
         _output,
-        "  --ssl-certificate-path  "
-        "Set the SSL certificate file path, default: \"%s\"\n",
-        DEFAULT_SSL_CERT
-    );
-    fprintf(
-        _output,
-        "  --ssl-private-key-path  "
-        "Set the SSL private key file path, default: \"%s\"\n",
-        DEFAULT_SSL_PKEY
+        "  --tls-private-key-path  "
+        "Set the TLS private key file path, default: \"%s\"\n",
+        DEFAULT_TLS_PKEY
     );
 }
