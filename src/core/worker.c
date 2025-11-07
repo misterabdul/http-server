@@ -181,6 +181,14 @@ static void on_event(poller_t* poller, int code, void* data) {
             finish_job(_worker, _job, code);
             return;
         }
+        if (_job->state != JOB_STATE_WRITE) {
+#if POLL_ENGINE == POLL_ENGINE_EVPORT
+            /* Event port: always re-register the connection to the poller. */
+            int _socket = _job->connection.socket;
+            poller_add(poller, _socket, POLL_CODE_READ | POLL_CODE_ET, _job);
+#endif
+            return;
+        }
         if (job_write(_job, _data->buffer, _data->buffer_size) == -1) {
             finish_job(_worker, _job, code);
             return;

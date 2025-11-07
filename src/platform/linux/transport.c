@@ -6,36 +6,61 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <openssl/err.h>
+#include <pthread.h>
 #include <sys/sendfile.h>
 #include <unistd.h>
 
 #include <misc/logger.h>
 #include <misc/macro.h>
 
-#define KTLS_CHUNK                   134217728 /* 128 MB */
-#define SSL_ERROR_STRING_BUFFER_SIZE 255
+#define KTLS_CHUNK  134217728 /* 128 MB */
+#define BUFFER_SIZE 120
 
 /**
- * @brief Global SSL error code.
+ * @brief All the thread specific data.
  */
-static unsigned long g_errno;
+typedef struct thread_data {
+    /**
+     * @brief Global SSL error string buffer.
+     */
+    char buf[BUFFER_SIZE];
+
+    /**
+     * @brief Global SSL error code.
+     */
+    unsigned long err;
+
+    /**
+     * @brief Mark the state of sendfile ability at runtime. Once the value is
+     * set to false, it should never set true again.
+     */
+    bool can_sendfile;
+
+    /**
+     * @brief Mark the state of ktls ability at runtime. Once the value is set
+     * to false, it should never set true again.
+     */
+    bool can_ktls;
+} thread_data_t;
 
 /**
- * @brief Global SSL error string buffer.
+ * @brief The key for the thread specific data.
  */
-static char g_error[SSL_ERROR_STRING_BUFFER_SIZE];
+static pthread_key_t g_data_key;
 
 /**
- * @brief Mark the state of sendfile ability at runtime. Once the value is set
- * to zero, it should never set non-zero again.
+ * @brief Get the thread specific data.
+ *
+ * @return Thread specific data instance.
  */
-static int g_can_sendfile = 1;
+static inline thread_data_t* thread_data_get(void);
 
 /**
- * @brief Mark the state of ktls ability at runtime. Once the value is set to
- * zero, it should never set non-zero again.
+ * @brief Cleanup the thread specific data.
+ *
+ * @param[out] ptr The pointer for the thread specific data instance.
  */
-static int g_can_ktls = 1;
+static void thread_data_cleanup(void* ptr);
 
 /**
  * @brief Do the sendfile via kernel offload.
@@ -108,17 +133,34 @@ static inline int bssl_sendfile(
 );
 
 /**
- * @copydoc ssl_init
+ * @copydoc lib_transport_init
  */
-void ssl_init(void) {
+int lib_transport_init(void) {
+    int _ret = pthread_key_create(&g_data_key, thread_data_cleanup);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_key_create: %s (%d)\n", strerror(_ret), _ret);
+        return -1;
+    }
+
     OPENSSL_init();
+    return 0;
 }
 
 /**
- * @copydoc ssl_cleanup
+ * @copydoc lib_transport_cleanup
  */
-void ssl_cleanup(void) {
+void lib_transport_cleanup(void) {
     OPENSSL_cleanup();
+
+    thread_data_t* _td = pthread_getspecific(g_data_key);
+    if (_td) {
+        free(_td);
+    }
+
+    int _ret = pthread_key_delete(g_data_key);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_key_delete: %s (%d)\n", strerror(_ret), _ret);
+    }
 }
 
 /**
@@ -248,12 +290,14 @@ int server_setup(server_t* server) {
 int server_enable_ssl(
     server_t* server, const char* certificate, const char* private_key
 ) {
+    thread_data_t* _td = thread_data_get();
+
     /* Create a new SSL context for the server. */
     server->ssl = SSL_CTX_new(TLS_server_method());
     if (server->ssl == NULL) {
-        g_errno = ERR_get_error();
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_CTX_new: %s (%ld)\n", g_error, g_errno);
+        _td->err = ERR_get_error();
+        ERR_error_string(_td->err, _td->buf);
+        LOG_ERROR("SSL_CTX_new: %s\n", _td->buf);
         return -1;
     }
 
@@ -266,9 +310,9 @@ int server_enable_ssl(
         server->ssl, server->certificate, SSL_FILETYPE_PEM
     );
     if (_ret != 1) {
-        g_errno = ERR_get_error();
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_CTX_use_certificate_file: %s (%ld)\n", g_error, g_errno);
+        _td->err = ERR_get_error();
+        ERR_error_string(_td->err, _td->buf);
+        LOG_ERROR("SSL_CTX_use_certificate_file: %s\n", _td->buf);
         return -1;
     }
 
@@ -278,18 +322,18 @@ int server_enable_ssl(
         server->ssl, server->private_key, SSL_FILETYPE_PEM
     );
     if (_ret != 1) {
-        g_errno = ERR_get_error();
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_CTX_use_PrivateKey_file: %s (%ld)\n", g_error, g_errno);
+        _td->err = ERR_get_error();
+        ERR_error_string(_td->err, _td->buf);
+        LOG_ERROR("SSL_CTX_use_PrivateKey_file: %s\n", _td->buf);
         return -1;
     }
 
     /* Validate the private key file with the assigned certificate file. */
     _ret = SSL_CTX_check_private_key(server->ssl);
     if (_ret != 1) {
-        g_errno = ERR_get_error();
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_CTX_check_private_key: %s (%ld)\n", g_error, g_errno);
+        _td->err = ERR_get_error();
+        ERR_error_string(_td->err, _td->buf);
+        LOG_ERROR("SSL_CTX_check_private_key: %s\n", _td->buf);
         return -1;
     }
 
@@ -357,7 +401,7 @@ void server_cleanup(server_t* server) {
 void connection_init(connection_t* connection, server_t* server) {
     *connection = (connection_t){
         .address = (struct sockaddr_storage){0},
-        .ssl_established = 0,
+        .ssl_established = false,
         .address_size = 0,
         .server = server,
         .socket = -1,
@@ -457,26 +501,30 @@ int connection_setup(
     }
 
     if (connection->server->ssl) {
+        thread_data_t* _td = thread_data_get();
+
         /* Create a new SSL instance from the server's SSL context. */
         connection->ssl = SSL_new(connection->server->ssl);
         if (connection->ssl == NULL) {
-            g_errno = ERR_get_error();
-            ERR_error_string(g_errno, g_error);
-            LOG_ERROR("SSL_new: %s (%ld)\n", g_error, g_errno);
+            _td->err = ERR_get_error();
+            ERR_error_string(_td->err, _td->buf);
+            LOG_ERROR("SSL_new: %s\n", _td->buf);
             return -1;
         }
 
         /* Assign the connection socket to the SSL instance. */
         if (SSL_set_fd(connection->ssl, connection->socket) != 1) {
-            g_errno = ERR_get_error();
-            ERR_error_string(g_errno, g_error);
-            LOG_ERROR("SSL_set_fd: %s (%ld)\n", g_error, g_errno);
+            _td->err = ERR_get_error();
+            ERR_error_string(_td->err, _td->buf);
+            LOG_ERROR("SSL_set_fd: %s\n", _td->buf);
             return -1;
         }
 
 #ifdef SSL_OP_ENABLE_KTLS
+
         /* Enable kernel offload for TLS operation. */
         SSL_set_options(connection->ssl, SSL_OP_ENABLE_KTLS);
+
 #endif
     }
 
@@ -492,21 +540,21 @@ int connection_establish_ssl(connection_t* connection) {
     }
 
     /* Accept the SSL handshake. */
-    for (;;) {
-        if (SSL_accept(connection->ssl) == 1) {
-            break;
-        }
-        g_errno = ERR_get_error();
-        if (g_errno == SSL_ERROR_NONE) {
-            continue;
-        }
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_accept: %s (%ld)\n", g_error, g_errno);
-        return -1;
+    int _ret = SSL_accept(connection->ssl);
+    if (_ret == 1) {
+        connection->ssl_established = true;
+        return 0;
     }
-    connection->ssl_established = 1;
 
-    return 0;
+    thread_data_t* _td = thread_data_get();
+    _td->err = SSL_get_error(connection->ssl, _ret);
+    if (_td->err == SSL_ERROR_WANT_READ) {
+        return 0;
+    }
+
+    ERR_error_string(_td->err, _td->buf);
+    LOG_ERROR("SSL_accept: %s\n", _td->buf);
+    return -1;
 }
 
 /**
@@ -529,25 +577,34 @@ int connection_get_error(connection_t* connection) {
 int connection_receive(
     connection_t* connection, char* buffer, size_t size, size_t* received
 ) {
+    /* To allow the insertion of null terminator at the end of the buffer. */
+    size_t _limit = size - 1;
+
     if (connection->ssl) {
+        thread_data_t* _td = thread_data_get();
+
         /* Iterate until the `SSL_read` function call return error. Ideally the
          * error should be `SSL_ERROR_WANT_READ` to notice that the next call
          * would be blocking. That's because the connection socket is operated
          * in non-blocking mode.
          */
         for (ssize_t _ret = 1; _ret >= 0;) {
-            _ret =
-                SSL_read(connection->ssl, buffer + *received, size - *received);
+            _ret = SSL_read(
+                connection->ssl, buffer + *received, _limit - *received
+            );
             if (_ret > 0) {
                 *received += _ret;
                 continue;
             }
-            g_errno = ERR_get_error();
-            if (g_errno == SSL_ERROR_NONE || g_errno == SSL_ERROR_WANT_READ) {
+            if (_ret == 0) {
                 break;
             }
-            ERR_error_string(g_errno, g_error);
-            LOG_ERROR("SSL_read: %s (%ld)\n", g_error, g_errno);
+            _td->err = SSL_get_error(connection->ssl, _ret);
+            if (_td->err == SSL_ERROR_WANT_READ) {
+                break;
+            }
+            ERR_error_string(_td->err, _td->buf);
+            LOG_ERROR("SSL_read: %s\n", _td->buf);
             return -1;
         }
     } else {
@@ -558,7 +615,7 @@ int connection_receive(
          */
         for (ssize_t _ret = 1; _ret > 0;) {
             _ret = recv(
-                connection->socket, buffer + *received, size - *received, 0
+                connection->socket, buffer + *received, _limit - *received, 0
             );
             if (_ret > 0) {
                 *received += _ret;
@@ -583,6 +640,8 @@ int connection_send(
     connection_t* connection, char* buffer, size_t size, size_t* sent
 ) {
     if (connection->ssl) {
+        thread_data_t* _td = thread_data_get();
+
         /* Iterate until the `SSL_write` function call return error. Ideally the
          * error should be `SSL_ERROR_WANT_WRITE` to notice that the next call
          * would be blocking. That's because the connection socket is operated
@@ -594,12 +653,12 @@ int connection_send(
                 *sent += _ret;
                 continue;
             }
-            g_errno = ERR_get_error();
-            if (g_errno == SSL_ERROR_NONE || g_errno == SSL_ERROR_WANT_WRITE) {
+            _td->err = SSL_get_error(connection->ssl, _ret);
+            if (_td->err == SSL_ERROR_WANT_WRITE) {
                 break;
             }
-            ERR_error_string(g_errno, g_error);
-            LOG_ERROR("SSL_write: %s (%ld)\n", g_error, g_errno);
+            ERR_error_string(_td->err, _td->buf);
+            LOG_ERROR("SSL_write: %s\n", _td->buf);
             return -1;
         }
     } else {
@@ -636,11 +695,12 @@ int connection_sendfile(
     size_t buffer_size,
     off_t* sent
 ) {
+    thread_data_t* _td = thread_data_get();
     int _ret;
 
     if (connection->ssl) {
         /* Try KTLS first. */
-        if (g_can_ktls) {
+        if (_td->can_ktls) {
             _ret = ktls_sendfile(connection, file_fd, file_size, sent);
             if (_ret == 0) {
                 return 0;
@@ -648,7 +708,7 @@ int connection_sendfile(
             if (errno != ENOSYS) {
                 return -1;
             }
-            g_can_ktls = 0;
+            _td->can_ktls = false;
         }
 
         /* Fallback to buffered sendfile. */
@@ -657,7 +717,7 @@ int connection_sendfile(
         );
     } else {
         /* Try kernel sendfile first. */
-        if (g_can_sendfile) {
+        if (_td->can_sendfile) {
             _ret = krnl_sendfile(connection, file_fd, file_size, sent);
             if (_ret == 0) {
                 return 0;
@@ -665,7 +725,7 @@ int connection_sendfile(
             if (errno != ENOSYS) {
                 return -1;
             }
-            g_can_sendfile = 0;
+            _td->can_sendfile = false;
         }
 
         /* Fallback to buffered sendfile. */
@@ -683,21 +743,12 @@ int connection_sendfile(
 void connection_close(connection_t* connection, char* buffer, size_t size) {
     /* Close the established SSL connection. */
     if (connection->ssl && connection->ssl_established) {
-        for (int _ret;;) {
-            _ret = SSL_shutdown(connection->ssl);
-            if (_ret == 1) {
-                break;
-            }
-            if (_ret == 0) {
-                continue;
-            }
-            g_errno = ERR_get_error();
-            if (g_errno == SSL_ERROR_NONE) {
-                continue;
-            }
-            ERR_error_string(g_errno, g_error);
-            LOG_ERROR("SSL_shutdown: %s (%ld)\n", g_error, g_errno);
-            break;
+        thread_data_t* _td = thread_data_get();
+        int _ret = SSL_shutdown(connection->ssl);
+        if (_ret < 0) {
+            _td->err = SSL_get_error(connection->ssl, _ret);
+            ERR_error_string(_td->err, _td->buf);
+            LOG_ERROR("SSL_shutdown: %s\n", _td->buf);
         }
     }
 
@@ -828,6 +879,8 @@ static inline int buff_sendfile(
 static inline int ktls_sendfile(
     connection_t* connection, int file_fd, off_t file_size, off_t* sent
 ) {
+    thread_data_t* _td = thread_data_get();
+
     /* Check if KTLS possible. */
     BIO* _bio = SSL_get_wbio(connection->ssl);
     if (BIO_get_ktls_send(_bio) == 0) {
@@ -848,12 +901,12 @@ static inline int ktls_sendfile(
         if (_ret == 0) {
             break;
         }
-        g_errno = ERR_get_error();
-        if (g_errno == SSL_ERROR_WANT_WRITE) {
+        _td->err = SSL_get_error(connection->ssl, _ret);
+        if (_td->err == SSL_ERROR_WANT_WRITE) {
             break;
         }
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_sendfile: %s (%ld)\n", g_error, g_errno);
+        ERR_error_string(_td->err, _td->buf);
+        LOG_ERROR("SSL_sendfile: %s\n", _td->buf);
         return -1;
     }
 
@@ -871,6 +924,7 @@ static inline int bssl_sendfile(
     size_t buffer_size,
     off_t* sent
 ) {
+    thread_data_t* _td = thread_data_get();
     size_t _remaining, _chunk;
     ssize_t _read;
     off_t _seek;
@@ -904,14 +958,43 @@ static inline int bssl_sendfile(
         if (_ret == 0) {
             break;
         }
-        g_errno = ERR_get_error();
-        if (g_errno == SSL_ERROR_WANT_WRITE) {
+        _td->err = SSL_get_error(connection->ssl, _ret);
+        if (_td->err == SSL_ERROR_WANT_WRITE) {
             break;
         }
-        ERR_error_string(g_errno, g_error);
-        LOG_ERROR("SSL_write: %s (%ld)\n", g_error, g_errno);
+        ERR_error_string(_td->err, _td->buf);
+        LOG_ERROR("SSL_write: %s\n", _td->buf);
         return -1;
     }
 
     return 0;
+}
+
+/**
+ * @copydoc thread_data_get
+ */
+static inline thread_data_t* thread_data_get(void) {
+    thread_data_t* _td = pthread_getspecific(g_data_key);
+    if (_td) {
+        return _td;
+    }
+
+    _td = malloc(sizeof(thread_data_t));
+    *_td = (thread_data_t){.can_sendfile = true, .can_ktls = true, .err = 0};
+    int _ret = pthread_setspecific(g_data_key, _td);
+    if (_ret != 0) {
+        LOG_ERROR("pthread_setspecific: %s (%d)\n", strerror(_ret), _ret);
+    }
+
+    return _td;
+}
+
+/**
+ * @copydoc thread_data_cleanup
+ */
+static void thread_data_cleanup(void* ptr) {
+    thread_data_t* _td = (thread_data_t*)ptr;
+    if (_td) {
+        free(_td);
+    }
 }

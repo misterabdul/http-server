@@ -2,6 +2,7 @@
 #define lib_transport_h
 
 #include <openssl/ssl.h>
+#include <stdbool.h>
 #include <sys/socket.h>
 
 /**
@@ -71,7 +72,7 @@ typedef struct connection {
     /**
      * @brief Whether the SSL connection successfully established or not.
      */
-    int ssl_established;
+    bool ssl_established;
 
     /**
      * @brief The transport server instance from which the connection accepted.
@@ -81,14 +82,16 @@ typedef struct connection {
 } connection_t;
 
 /**
- * @brief Initialize SSL related stuff.
+ * @brief Initialize the library.
+ *
+ * @return Result code, 0 for success or -1 for errors.
  */
-void ssl_init(void);
+int lib_transport_init(void);
 
 /**
- * @brief Clean SSL related stuff.
+ * @brief Clean all the library related stuff.
  */
-void ssl_cleanup(void);
+void lib_transport_cleanup(void);
 
 /**
  * @brief Initialize the transport server.

@@ -39,8 +39,10 @@ static void signal_handler(int signum);
  * @return The result code of the program.
  */
 int main(int argc, char* argv[]) {
-    /* Initialize all the SSL related stuff. */
-    ssl_init();
+    /* Initialize the transport library. */
+    if (lib_transport_init() == -1) {
+        return 1;
+    }
 
     /* Parse argument and get the config. */
     if (config_get(&g_config, argc, argv) == -1) {
@@ -109,7 +111,7 @@ int main(int argc, char* argv[]) {
     /* Perform cleanups. */
     manager_cleanup(&_manager);
     config_cleanup(&g_config);
-    ssl_cleanup();
+    lib_transport_cleanup();
 
     return 0;
 }

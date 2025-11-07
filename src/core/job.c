@@ -1,6 +1,6 @@
 #include "job.h"
 
-#include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include <misc/logger.h>
@@ -87,15 +87,13 @@ void job_init(job_t* job, server_t* server, const char* root, size_t length) {
  * @copydoc job_setup
  */
 int job_setup(job_t* job) {
-    int _ret = connection_setup(
+    return connection_setup(
         &job->connection,
         DEFAULT_TIMEOUT_RECEIVE,
         DEFAULT_KERNEL_BUFFER_RECEIVE,
         DEFAULT_TIMEOUT_SEND,
         DEFAULT_KERNEL_BUFFER_SEND
     );
-
-    return _ret;
 }
 
 /**
@@ -112,16 +110,23 @@ int job_handle_issue(job_t* job) {
  * @copydoc job_read
  */
 int job_read(job_t* job, char* buffer, size_t size) {
-    /* Reset the job instance if the previous write process wasn't done yet. */
-    if (job->state == JOB_STATE_WRITE) {
-        job_reset(job);
-    }
+    bool _err_empty_recv = true;
 
     /* Establish the SSL connection if not established yet. */
-    if (job->connection.ssl && job->connection.ssl_established == 0) {
+    if (job->connection.ssl && !job->connection.ssl_established) {
         if (connection_establish_ssl(&job->connection) == -1) {
             return -1;
         }
+        if (!job->connection.ssl_established) {
+            return 0;
+        }
+        /* Supress the error on empty receive just after the ssl established. */
+        _err_empty_recv = false;
+    }
+
+    /* Reset the job instance if the previous write process wasn't done yet. */
+    if (job->state == JOB_STATE_WRITE) {
+        job_reset(job);
     }
 
     /* Get the raw request. */
@@ -130,7 +135,7 @@ int job_read(job_t* job, char* buffer, size_t size) {
         return -1;
     }
     if (_received == 0) {
-        return -1;
+        return _err_empty_recv ? -1 : 0;
     }
 
     /* Do the HTTP operation and prepare the HTTP response. */
@@ -144,11 +149,6 @@ int job_read(job_t* job, char* buffer, size_t size) {
  * @copydoc job_write
  */
 int job_write(job_t* job, char* buffer, size_t size) {
-    /* Cancel the operation if previous read process wasn't done yet. */
-    if (job->state == JOB_STATE_READ) {
-        return -1;
-    }
-
     response_t* _res = &job->http.response;
     connection_t* _conn = &job->connection;
 
