@@ -6,11 +6,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <openssl/err.h>
+#include <sys/uio.h>
+#include <unistd.h>
 
-#include <misc/sendfile.h>
 #include <misc/logger.h>
 #include <misc/macro.h>
 
+#define KTLS_CHUNK                   134217728 /* 128 MB */
 #define SSL_ERROR_STRING_BUFFER_SIZE 255
 
 /**
@@ -34,6 +36,76 @@ static int g_can_sendfile = 1;
  * zero, it should never set non-zero again.
  */
 static int g_can_ktls = 1;
+
+/**
+ * @brief Do the sendfile via kernel offload.
+ *
+ * @param[in]  connection The transport connection instance.
+ * @param[in]  file_fd    The file descriptor.
+ * @param[in]  file_size  The size of the file.
+ * @param[out] sent       The portion of the file that has been sent.
+ *
+ * @return Result code, 0 for success or -1 for errors.
+ */
+static inline int krnl_sendfile(
+    connection_t* connection, int file_fd, off_t file_size, off_t* sent
+);
+
+/**
+ * @brief Do the sendfile with user space buffer.
+ *
+ * @param[in]  connection  The transport connection instance.
+ * @param[in]  file_fd     The file to be sent.
+ * @param[in]  file_size   The size of the file.
+ * @param[out] buffer      The buffer for the operation.
+ * @param[in]  buffer_size The size of the buffer.
+ * @param[out] sent        The portion of the file that has been sent.
+ *
+ * @return Size of the sent data or -1 for errors.
+ */
+static inline int buff_sendfile(
+    connection_t* connection,
+    int file_fd,
+    off_t file_size,
+    void* buffer,
+    size_t buffer_size,
+    off_t* sent
+);
+
+/**
+ * @brief Do the SSL sendfile via kernel TLS offload.
+ *
+ * @param[in]  connection The transport connection instance.
+ * @param[in]  file_fd    The file descriptor.
+ * @param[in]  file_size  The size of the file.
+ * @param[out] sent       The portion of the file that has been sent.
+ *
+ * @return Result code, 0 for success or -1 for errors.
+ */
+static inline int ktls_sendfile(
+    connection_t* connection, int file_fd, off_t file_size, off_t* sent
+);
+
+/**
+ * @brief Do the SSL sendfile with user space buffer.
+ *
+ * @param[in]  connection  The transport connection instance.
+ * @param[in]  file_fd     The file to be sent.
+ * @param[in]  file_size   The size of the file.
+ * @param[out] buffer      The buffer for the operation.
+ * @param[in]  buffer_size The size of the buffer.
+ * @param[out] sent        The portion of the file that has been sent.
+ *
+ * @return Size of the sent data or -1 for errors.
+ */
+static inline int bssl_sendfile(
+    connection_t* connection,
+    int file_fd,
+    off_t file_size,
+    void* buffer,
+    size_t buffer_size,
+    off_t* sent
+);
 
 /**
  * @copydoc ssl_init
@@ -133,48 +205,6 @@ int server_setup(server_t* server) {
 
 #endif
 
-/* Linux specific */
-#if PLATFORM == PLATFORM_LINUX
-
-    /* Mitigates simple connection flood attacks. */
-    _opt = 1;
-    _ret = setsockopt(
-        server->socket, IPPROTO_TCP, TCP_DEFER_ACCEPT, &_opt, sizeof(int)
-    );
-    if (_ret == -1) {
-        LOG_ERROR("setsockopt: %s (%d)\n", strerror(errno), errno);
-    }
-
-    /* For IPv6 socket, set the socket to only operate on IPv6 mode only. */
-    if (_address->sa_family == AF_INET6) {
-        _opt = 0;
-        _ret = setsockopt(
-            server->socket, IPPROTO_IPV6, IPV6_V6ONLY, &_opt, sizeof(int)
-        );
-        if (_ret == -1) {
-            LOG_ERROR("setsockopt: %s (%d)\n", strerror(errno), errno);
-        }
-    }
-
-/* FreeBSD specific */
-#elif PLATFORM == PLATFORM_FREEBSD
-
-    /* Mitigates simple connection flood attacks. */
-    struct accept_filter_arg _afopt = (struct accept_filter_arg){0};
-    strcpy(_afopt.af_name, "httpready");
-    _ret = setsockopt(
-        server->socket,
-        SOL_SOCKET,
-        SO_ACCEPTFILTER,
-        &_afopt,
-        sizeof(struct accept_filter_arg)
-    );
-    if (_ret == -1) {
-        LOG_ERROR("setsockopt: %s (%d)\n", strerror(errno), errno);
-    }
-
-#endif
-
     /* Bind the server socket to the given address and ports. */
     _ret = bind(server->socket, _address, server->address_size);
     if (_ret == -1) {
@@ -249,13 +279,7 @@ int server_enable_ssl(
 
 #ifdef SSL_OP_ENABLE_KTLS
 
-#if PLATFORM == PLATFORM_LINUX
-    /* Linux specific */
-    _opt |= SSL_OP_ENABLE_KTLS | SSL_OP_ENABLE_KTLS_TX_ZEROCOPY_SENDFILE;
-#else
-    /* Other platform */
     _opt |= SSL_OP_ENABLE_KTLS;
-#endif
 
 #endif
 
@@ -597,9 +621,7 @@ int connection_sendfile(
     if (connection->ssl) {
         /* Try KTLS first. */
         if (g_can_ktls) {
-            _ret = kernel_sendfile_secure(
-                connection->ssl, file_fd, file_size, sent
-            );
+            _ret = ktls_sendfile(connection, file_fd, file_size, sent);
             if (_ret == 0) {
                 return 0;
             }
@@ -610,14 +632,13 @@ int connection_sendfile(
         }
 
         /* Fallback to buffered sendfile. */
-        _ret = buffered_sendfile_secure(
-            connection->ssl, file_fd, file_size, buffer, buffer_size, sent
+        _ret = bssl_sendfile(
+            connection, file_fd, file_size, buffer, buffer_size, sent
         );
     } else {
         /* Try kernel sendfile first. */
         if (g_can_sendfile) {
-            _ret =
-                kernel_sendfile(connection->socket, file_fd, file_size, sent);
+            _ret = krnl_sendfile(connection, file_fd, file_size, sent);
             if (_ret == 0) {
                 return 0;
             }
@@ -628,8 +649,8 @@ int connection_sendfile(
         }
 
         /* Fallback to buffered sendfile. */
-        _ret = buffered_sendfile(
-            connection->socket, file_fd, file_size, buffer, buffer_size, sent
+        _ret = buff_sendfile(
+            connection, file_fd, file_size, buffer, buffer_size, sent
         );
     }
 
@@ -700,4 +721,179 @@ void connection_cleanup(connection_t* connection) {
     if (connection->ssl) {
         SSL_free(connection->ssl);
     }
+}
+
+/**
+ * @copydoc krnl_sendfile
+ */
+static inline int krnl_sendfile(
+    connection_t* connection, int file_fd, off_t file_size, off_t* sent
+) {
+    int _socket = connection->socket;
+
+    /* Iterate until the `sendfile` function call return error. Ideally the
+     * error should be `EAGAIN` or `EWOULDBLOCK` to notice that the next call
+     * would be blocking. That's because the socket is operated in non-blocking
+     * mode. If the error is `ENOSYS`, then `sendfile` is not supported.
+     */
+    for (ssize_t _ret; *sent < file_size;) {
+        _ret = sendfile(file_fd, socket, *sent, sent, NULL, 0);
+        if (_ret == 0) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        }
+        if (errno != ENOSYS) {
+            LOG_ERROR("sendfile: %s (%d)\n", strerror(errno), errno);
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @copydoc buff_sendfile
+ */
+static inline int buff_sendfile(
+    connection_t* connection,
+    int file_fd,
+    off_t file_size,
+    void* buffer,
+    size_t buffer_size,
+    off_t* sent
+) {
+    size_t _remaining, _chunk;
+    ssize_t _read;
+    off_t _seek;
+
+    for (ssize_t _ret; *sent < file_size;) {
+        /* Set the file offset before reading. */
+        _seek = lseek(file_fd, *sent, SEEK_SET);
+        if (_seek == -1) {
+            LOG_ERROR("lseek: %s (%d)\n", strerror(errno), errno);
+            return -1;
+        }
+
+        /* Read the content of the file into the buffer. */
+        _remaining = (size_t)(file_size - *sent);
+        _chunk = _remaining <= buffer_size ? _remaining : buffer_size;
+        _read = read(file_fd, buffer, _chunk);
+        if (_read == -1) {
+            LOG_ERROR("read: %s (%d)\n", strerror(errno), errno);
+            return -1;
+        }
+        if (_read == 0) {
+            break;
+        }
+
+        /* Send the content of the buffer. */
+        _ret = send(connection->socket, buffer, _read, 0);
+        if (_ret > 0) {
+            *sent += _ret;
+            continue;
+        }
+        if (_ret == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        }
+        LOG_ERROR("send: %s (%d)\n", strerror(errno), errno);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @copydoc ktls_sendfile
+ */
+static inline int ktls_sendfile(
+    connection_t* connection, int file_fd, off_t file_size, off_t* sent
+) {
+    /* Check if KTLS possible. */
+    BIO* _bio = SSL_get_wbio(connection->ssl);
+    if (BIO_get_ktls_send(_bio) == 0) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    /* Iterate until the `SSL_sendfile` function call return error. Ideally the
+     * error should be `SSL_ERROR_WANT_WRITE` to notice that the next call would
+     * be blocking. That's because the socket is operated in non-blocking mode.
+     */
+    for (ssize_t _ret; *sent < file_size;) {
+        _ret = SSL_sendfile(connection->ssl, file_fd, *sent, KTLS_CHUNK, 0);
+        if (_ret > 0) {
+            *sent += _ret;
+            continue;
+        }
+        if (_ret == 0) {
+            break;
+        }
+        g_errno = ERR_get_error();
+        if (g_errno == SSL_ERROR_WANT_WRITE) {
+            break;
+        }
+        ERR_error_string(g_errno, g_error);
+        LOG_ERROR("SSL_sendfile: %s (%ld)\n", g_error, g_errno);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * @copydoc bssl_sendfile
+ */
+static inline int bssl_sendfile(
+    connection_t* connection,
+    int file_fd,
+    off_t file_size,
+    void* buffer,
+    size_t buffer_size,
+    off_t* sent
+) {
+    size_t _remaining, _chunk;
+    ssize_t _read;
+    off_t _seek;
+
+    for (ssize_t _ret; *sent < file_size;) {
+        /* Set the file offset before reading. */
+        _seek = lseek(file_fd, *sent, SEEK_SET);
+        if (_seek == -1) {
+            LOG_ERROR("lseek: %s (%d)\n", strerror(errno), errno);
+            return -1;
+        }
+
+        /* Read the content of the file into the buffer. */
+        _remaining = (size_t)(file_size - *sent);
+        _chunk = _remaining <= buffer_size ? _remaining : buffer_size;
+        _read = read(file_fd, buffer, _chunk);
+        if (_read == -1) {
+            LOG_ERROR("read: %s (%d)\n", strerror(errno), errno);
+            return -1;
+        }
+        if (_read == 0) {
+            break;
+        }
+
+        /* Send the content of the buffer via SSL. */
+        _ret = SSL_write(connection->ssl, buffer, _read);
+        if (_ret > 0) {
+            *sent += _ret;
+            continue;
+        }
+        if (_ret == 0) {
+            break;
+        }
+        g_errno = ERR_get_error();
+        if (g_errno == SSL_ERROR_WANT_WRITE) {
+            break;
+        }
+        ERR_error_string(g_errno, g_error);
+        LOG_ERROR("SSL_write: %s (%ld)\n", g_error, g_errno);
+        return -1;
+    }
+
+    return 0;
 }
